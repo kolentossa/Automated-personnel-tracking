@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Personnel Tracking</title>
+    <link rel="stylesheet" href="/dashboard/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <h1>Personnel Tracking</h1>
+          <p id="service-state">Connecting</p>
+        </div>
+        <div class="status-pill" id="camera-pill">Offline</div>
+      </header>
+
+      <section class="metrics" aria-label="Current metrics">
+        <article class="metric primary">
+          <span class="label">Current People</span>
+          <strong id="current-people">0</strong>
+        </article>
+        <article class="metric">
+          <span class="label">Camera</span>
+          <strong id="camera-status">Offline</strong>
+        </article>
+        <article class="metric">
+          <span class="label">FPS</span>
+          <strong id="fps">0</strong>
+        </article>
+        <article class="metric">
+          <span class="label">Frames</span>
+          <strong id="frames">0</strong>
+        </article>
+      </section>
+
+      <section class="split">
+        <article class="panel tally">
+          <h2>Today</h2>
+          <div class="tally-grid">
+            <div>
+              <span>Entered</span>
+              <strong id="entered">0</strong>
+            </div>
+            <div>
+              <span>Exited</span>
+              <strong id="exited">0</strong>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel events-panel">
+          <h2>Recent Events</h2>
+          <ol id="events" class="events"></ol>
+        </article>
+      </section>
+    </main>
+    <script src="/dashboard/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,258 @@
+:root {
+  color-scheme: light;
+  --bg: #f4f6f8;
+  --surface: #ffffff;
+  --surface-strong: #e9eef2;
+  --text: #1e2529;
+  --muted: #66727a;
+  --line: #d6dde2;
+  --teal: #287d78;
+  --green: #2d7a45;
+  --red: #a33d3d;
+  --amber: #946d1f;
+  --blue: #3f5f9e;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.shell {
+  width: min(1120px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 28px 0 36px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 0 22px;
+  border-bottom: 1px solid var(--line);
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: clamp(1.65rem, 2vw, 2.2rem);
+  line-height: 1.1;
+  letter-spacing: 0;
+}
+
+h2 {
+  font-size: 1rem;
+  line-height: 1.25;
+  margin-bottom: 16px;
+}
+
+#service-state {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.status-pill {
+  min-width: 112px;
+  text-align: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 9px 14px;
+  font-weight: 700;
+  color: var(--red);
+  background: var(--surface);
+}
+
+.status-pill.online {
+  color: var(--green);
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: 1.25fr repeat(3, 1fr);
+  gap: 14px;
+  margin: 22px 0;
+}
+
+.metric,
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 12px 28px rgba(30, 37, 41, 0.08);
+}
+
+.metric {
+  min-height: 126px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.metric.primary {
+  border-color: rgba(40, 125, 120, 0.38);
+  background: linear-gradient(135deg, #ffffff 0%, #eef7f5 100%);
+}
+
+.label,
+.tally span {
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.metric strong {
+  font-size: clamp(1.85rem, 4vw, 3.4rem);
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.metric:not(.primary) strong {
+  font-size: clamp(1.4rem, 2.4vw, 2.1rem);
+}
+
+.split {
+  display: grid;
+  grid-template-columns: 0.85fr 1.15fr;
+  gap: 14px;
+}
+
+.panel {
+  padding: 18px;
+  min-height: 260px;
+}
+
+.tally-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.tally-grid div {
+  min-height: 156px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface-strong);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.tally-grid strong {
+  font-size: clamp(2rem, 5vw, 4rem);
+  line-height: 1;
+}
+
+.tally-grid div:first-child strong {
+  color: var(--green);
+}
+
+.tally-grid div:last-child strong {
+  color: var(--amber);
+}
+
+.events {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.events li {
+  min-height: 46px;
+  display: grid;
+  grid-template-columns: 86px 1fr 80px;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.events .time {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.events .type {
+  font-weight: 800;
+}
+
+.events .type.enter {
+  color: var(--green);
+}
+
+.events .type.exit {
+  color: var(--red);
+}
+
+.events .track {
+  color: var(--blue);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.empty {
+  color: var(--muted);
+  padding: 12px 0;
+}
+
+@media (max-width: 820px) {
+  .metrics,
+  .split {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .metric.primary,
+  .events-panel {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 560px) {
+  .shell {
+    width: min(100% - 20px, 1120px);
+    padding-top: 16px;
+  }
+
+  .topbar,
+  .metrics,
+  .split,
+  .tally-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .topbar {
+    display: grid;
+  }
+
+  .status-pill {
+    width: 100%;
+  }
+
+  .events li {
+    grid-template-columns: 76px 1fr;
+  }
+
+  .events .track {
+    grid-column: 1 / -1;
+    text-align: left;
+  }
+}

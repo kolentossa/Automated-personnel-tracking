@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+logs/
+data/*.mp4
+models/*.onnx
+models/*.rknn
+.DS_Store
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+models/*.pt
+data/*.avi
+logs/*.jsonl
