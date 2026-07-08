@@ -4,12 +4,14 @@ server:
 
 camera:
   source_type: camera
-  camera_device: /dev/video-camera0
+  camera_device: /dev/video11
+  capture_backend: gstreamer
   auto_detect: true
   width: 1280
   height: 720
   fps: 15
   retry_interval_sec: 3.0
+  gstreamer_pipeline: "v4l2src device={device} ! video/x-raw,format=NV12,width={width},height={height} ! videoconvert ! video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false"
   video_file: data/sample.mp4
 
 detection:

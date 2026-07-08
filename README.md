@@ -265,3 +265,26 @@ Privacy behavior:
   are not used.
 - If a Haar cascade is unavailable or no face is found, the top portion of each
   person box is mosaiced as a head fallback.
+### RK3588 IMX415 camera capture note
+
+On this LubanCat-5 V2 board the IMX415 sensor is enabled and `v4l2-ctl` can
+stream from `/dev/video11`, but OpenCV direct V4L2 capture does not open the
+RKISP multiplanar node. The working path is OpenCV with the GStreamer backend:
+
+```text
+v4l2src device=/dev/video11 ! video/x-raw,format=NV12,width=1280,height=720 ! videoconvert ! video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false
+```
+
+`config.yaml` therefore defaults to:
+
+```yaml
+camera:
+  camera_device: /dev/video11
+  capture_backend: gstreamer
+  width: 1280
+  height: 720
+```
+
+This keeps the Python processing pipeline unchanged while avoiding the OpenCV
+V4L2 issue. If the camera connector or overlay changes, update
+`camera.camera_device` and test with `/api/health`.

@@ -1,4 +1,4 @@
-"""OpenCV/V4L2 camera access with automatic device probing."""
+"""OpenCV camera access for RK3588 V4L2 and GStreamer sources."""
 
 from __future__ import annotations
 
@@ -21,21 +21,28 @@ class CameraFrame:
 
 
 class CameraSource:
-    """Read frames from a V4L2 camera, with a video-file interface reserved."""
+    """Read frames from an RK3588 camera, with a video-file interface reserved."""
 
     def __init__(self, config: Dict[str, Any]) -> None:
         self.config = config
         self.source_type = str(config.get("source_type", "camera"))
-        self.camera_device = str(config.get("camera_device") or "/dev/video0")
+        self.camera_device = str(config.get("camera_device") or "/dev/video11")
+        self.capture_backend = str(config.get("capture_backend") or "auto").lower()
         self.auto_detect = bool(config.get("auto_detect", True))
-        self.width = int(config.get("width") or 0)
-        self.height = int(config.get("height") or 0)
+        self.width = int(config.get("width") or 1280)
+        self.height = int(config.get("height") or 720)
         self.target_fps = float(config.get("fps") or 0)
         self.retry_interval_sec = float(config.get("retry_interval_sec") or 3.0)
         self.video_file = str(config.get("video_file") or "data/sample.mp4")
+        self.gstreamer_pipeline_template = str(
+            config.get("gstreamer_pipeline")
+            or "v4l2src device={device} ! video/x-raw,format=NV12,width={width},height={height} "
+            "! videoconvert ! video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false"
+        )
         self.status = "offline"
         self.error = ""
         self.selected_source = ""
+        self.selected_backend = ""
         self.available_devices: List[Dict[str, Any]] = []
         self._capture: Optional[cv2.VideoCapture] = None
         self._last_open_attempt = 0.0
@@ -83,6 +90,7 @@ class CameraSource:
     def _open_video_file(self) -> bool:
         path = project_path(self.video_file)
         self.selected_source = str(path)
+        self.selected_backend = "video-file"
         if not path.exists():
             self.status = "error"
             self.error = f"Video file does not exist: {path}"
@@ -101,36 +109,46 @@ class CameraSource:
         candidates = self._candidate_devices()
         self.available_devices = []
         for device in candidates:
-            probe = probe_video_device(device, self.width, self.height, self.target_fps)
-            self.available_devices.append(probe)
-            if not probe.get("readable"):
-                continue
-            capture = open_v4l2_capture(device, self.width, self.height, self.target_fps)
-            if capture is None:
-                continue
-            self._capture = capture
-            self.selected_source = device
-            self.status = "online"
-            self.error = ""
-            return True
+            if self.capture_backend in {"auto", "gstreamer", "gst"}:
+                capture = open_gstreamer_capture(device, self.width, self.height, self.gstreamer_pipeline_template)
+                probe = probe_capture(capture, device, "gstreamer")
+                self.available_devices.append(probe)
+                if probe.get("readable") and capture is not None:
+                    self._capture = capture
+                    self.selected_source = device
+                    self.selected_backend = "gstreamer"
+                    self.status = "online"
+                    self.error = ""
+                    return True
+                if capture is not None:
+                    capture.release()
+            if self.capture_backend in {"auto", "v4l2"}:
+                capture = open_v4l2_capture(device, self.width, self.height, self.target_fps)
+                probe = probe_capture(capture, device, "v4l2")
+                self.available_devices.append(probe)
+                if probe.get("readable") and capture is not None:
+                    self._capture = capture
+                    self.selected_source = device
+                    self.selected_backend = "v4l2"
+                    self.status = "online"
+                    self.error = ""
+                    return True
+                if capture is not None:
+                    capture.release()
         self.selected_source = candidates[0] if candidates else self.camera_device
+        self.selected_backend = self.capture_backend
         self.status = "error"
         probed = ", ".join(candidates) if candidates else "no /dev/video* devices"
-        self.error = (
-            "No readable OpenCV/V4L2 camera device found. "
-            f"Configured={self.camera_device}; probed={probed}. "
-            "If v4l2-ctl can stream but OpenCV cannot, this RKISP device may need "
-            "a board-specific GStreamer/RKISP adapter."
-        )
+        self.error = f"No readable camera found. backend={self.capture_backend}; configured={self.camera_device}; probed={probed}."
         return False
 
     def _candidate_devices(self) -> List[str]:
         candidates: List[str] = []
         if self.camera_device:
-            candidates.append(self.camera_device)
+            candidates.append(_normalise_device(self.camera_device))
         if self.auto_detect:
-            if Path("/dev/video-camera0").exists():
-                candidates.append("/dev/video-camera0")
+            preferred = ["/dev/video11", "/dev/video0"]
+            candidates.extend(device for device in preferred if Path(device).exists())
             candidates.extend(
                 str(path)
                 for path in sorted(Path("/dev").glob("video*"), key=_natural_video_key)
@@ -143,11 +161,11 @@ class CameraSource:
         return unique
 
 
-def probe_video_device(device: str, width: int = 0, height: int = 0, fps: float = 0.0) -> Dict[str, Any]:
+def probe_capture(capture: Optional[cv2.VideoCapture], device: str, backend: str) -> Dict[str, Any]:
     started = time.monotonic()
-    capture = open_v4l2_capture(device, width, height, fps, require_read=False)
     result: Dict[str, Any] = {
         "device": device,
+        "backend": backend,
         "opened": False,
         "readable": False,
         "width": 0,
@@ -155,28 +173,34 @@ def probe_video_device(device: str, width: int = 0, height: int = 0, fps: float 
         "fps": 0.0,
         "error": "",
     }
-    if capture is None:
-        result["error"] = "OpenCV VideoCapture could not open this V4L2 device"
+    if capture is None or not capture.isOpened():
+        result["error"] = f"OpenCV could not open this camera with {backend}"
         return result
-    try:
-        result["opened"] = True
-        ok, frame = capture.read()
-        result["readable"] = bool(ok and frame is not None)
-        if frame is not None:
-            result["height"], result["width"] = frame.shape[:2]
-        else:
-            result["width"] = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-            result["height"] = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-        result["fps"] = round(float(capture.get(cv2.CAP_PROP_FPS) or 0.0), 2)
-        if not result["readable"]:
-            result["error"] = "Opened but did not return a frame"
-    finally:
-        capture.release()
+    result["opened"] = True
+    ok, frame = capture.read()
+    result["readable"] = bool(ok and frame is not None)
+    if frame is not None:
+        result["height"], result["width"] = frame.shape[:2]
+    else:
+        result["width"] = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        result["height"] = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    result["fps"] = round(float(capture.get(cv2.CAP_PROP_FPS) or 0.0), 2)
+    if not result["readable"]:
+        result["error"] = "Opened but did not return a frame"
     result["probe_ms"] = round((time.monotonic() - started) * 1000.0, 1)
     return result
 
 
-def open_v4l2_capture(device: str, width: int = 0, height: int = 0, fps: float = 0.0, require_read: bool = True) -> Optional[cv2.VideoCapture]:
+def open_gstreamer_capture(device: str, width: int, height: int, template: str) -> Optional[cv2.VideoCapture]:
+    pipeline = template.format(device=device, width=int(width), height=int(height))
+    capture = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+    if not capture.isOpened():
+        capture.release()
+        return None
+    return capture
+
+
+def open_v4l2_capture(device: str, width: int = 0, height: int = 0, fps: float = 0.0) -> Optional[cv2.VideoCapture]:
     attempts: List[Any] = [device]
     match = re.fullmatch(r"/dev/video(\d+)", device)
     if match:
@@ -187,11 +211,6 @@ def open_v4l2_capture(device: str, width: int = 0, height: int = 0, fps: float =
             capture.release()
             continue
         _apply_capture_settings(capture, width, height, fps)
-        if require_read:
-            ok, _ = capture.read()
-            if not ok:
-                capture.release()
-                continue
         return capture
     return None
 
@@ -203,6 +222,15 @@ def _apply_capture_settings(capture: cv2.VideoCapture, width: int, height: int, 
         capture.set(cv2.CAP_PROP_FRAME_HEIGHT, float(height))
     if fps > 0:
         capture.set(cv2.CAP_PROP_FPS, float(fps))
+
+
+def _normalise_device(value: str) -> str:
+    path = Path(value)
+    if path.is_symlink():
+        resolved = path.resolve()
+        if re.fullmatch(r"video\d+", resolved.name):
+            return str(resolved)
+    return value
 
 
 def _natural_video_key(path: Path) -> tuple[int, str]:
