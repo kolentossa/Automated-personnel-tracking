@@ -1,0 +1,35 @@
+server:
+  host: 0.0.0.0
+  port: 8000
+
+camera:
+  source_type: camera
+  camera_device: /dev/video-camera0
+  auto_detect: true
+  width: 1280
+  height: 720
+  fps: 15
+  retry_interval_sec: 3.0
+  video_file: data/sample.mp4
+
+detection:
+  model_path: ""
+  confidence_threshold: 0.35
+  input_size: 640
+  nms_threshold: 0.45
+  motion_min_area: 500
+
+tracking:
+  iou_threshold: 0.3
+  max_missing: 20
+  min_confidence: 0.15
+
+counting:
+  line: auto
+  enter_direction: positive_to_negative
+  cooldown_frames: 20
+
+privacy:
+  face_mosaic_enabled: true
+  head_fallback_enabled: true
+  mosaic_strength: 14

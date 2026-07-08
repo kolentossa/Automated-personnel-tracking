@@ -183,3 +183,85 @@ cd ~/projects/person-tracking
 ```
 
 The tests cover virtual-line counting and stable track IDs.
+## RK3588 Camera Web Tracking MVP
+
+This repository now includes a deployment-oriented local Web app under `app/`.
+It is intended to run on the LubanCat RK3588 as the normal `cat` user and does
+not require training a new model.
+
+Run it from the project root:
+
+```bash
+cd ~/projects/person-tracking
+source .venv/bin/activate
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+Or use the helper script:
+
+```bash
+cd ~/projects/person-tracking
+./scripts/run_dev.sh
+```
+
+Open the dashboard from another LAN device by replacing the address with the
+board IP:
+
+```text
+http://RK3588_IP:8000
+```
+
+Implemented routes:
+
+```text
+GET  /                  Web dashboard
+GET  /video             MJPEG stream
+GET  /api/stats         JSON statistics
+GET  /api/health        Service and camera health
+POST /api/reset-stats   Reset occupancy and crossing counters
+```
+
+The Web sidebar shows `current_occupancy`, `total_entered`, `total_exited`,
+`active_tracks`, `fps`, `latency_ms`, and `camera_status`. The video stream only
+draws detection boxes, temporary track IDs, confidence, and the crossing line.
+Count totals are kept outside the video image.
+
+Configuration lives in `config.yaml`. Important fields:
+
+```yaml
+camera:
+  source_type: camera
+  camera_device: /dev/video-camera0
+  auto_detect: true
+
+detection:
+  model_path: ""
+  confidence_threshold: 0.35
+  input_size: 640
+
+privacy:
+  face_mosaic_enabled: true
+```
+
+`camera.source_type` can later be changed to `video`, using `camera.video_file`,
+to reuse the same detection/tracking/counting pipeline with a prerecorded file.
+The default camera implementation uses OpenCV `VideoCapture` with the V4L2
+backend and automatically probes `/dev/video*`. If a sensor is present but
+OpenCV cannot read that board-specific RKISP node, `/api/health` and the Web
+page report the error instead of crashing.
+
+Detection uses the existing local demo detector path. If `detection.model_path`
+points to a local ONNX model, OpenCV DNN YOLO is used and only the person class
+is kept. If no model is configured or the file is missing, the app falls back to
+the existing no-model motion person detector. RKNN/NPU inference is intentionally
+left behind the detector interface for the next deployment step.
+
+Privacy behavior:
+
+- Frames are processed locally on the RK3588.
+- Raw unmasked camera frames are not saved by the Web app.
+- Mosaic anonymisation is applied before JPEG frames are sent to the browser.
+- Face recognition, identity recognition, ReID, embeddings, and face databases
+  are not used.
+- If a Haar cascade is unavailable or no face is found, the top portion of each
+  person box is mosaiced as a head fallback.

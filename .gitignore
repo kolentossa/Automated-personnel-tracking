@@ -13,3 +13,9 @@ models/*.rknn
 models/*.pt
 data/*.avi
 logs/*.jsonl
+models/*.engine
+models/*.weights
+models/*.bin
+models/*.data
+models/*.params
+models/*.xml
