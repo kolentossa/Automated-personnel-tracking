@@ -34,6 +34,13 @@ def main() -> int:
     detector = PersonDetector(config.get("detector") or config.get("detection", {}), fallback_config=config.get("detection", {}))
     tracker = PersonTracker(config["tracking"])
     privacy_config = config["privacy"]
+    if detector.name in {"no-op-person-detector", "motion-person-detector"}:
+        print(f"detector: {detector.name}")
+        print(f"npu_enabled: {str(detector.npu_enabled).lower()}")
+        if detector.warning:
+            print(f"warning: {detector.warning}")
+        print("error: refusing to benchmark placeholder detector", file=sys.stderr)
+        return 2
 
     timings: Dict[str, List[float]] = {key: [] for key in TIMING_KEYS}
     processed = 0
@@ -66,6 +73,10 @@ def main() -> int:
             )
             privacy_ms = _ms(time.monotonic() - privacy_started)
 
+            draw_started = time.monotonic()
+            _draw_tracks(display, tracks)
+            draw_ms = _ms(time.monotonic() - draw_started)
+
             encode_started = time.monotonic()
             ok, _ = cv2.imencode(".jpg", display, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
             encode_ms = _ms(time.monotonic() - encode_started)
@@ -80,7 +91,7 @@ def main() -> int:
                 "postprocess_ms": detector_profile.get("postprocess_ms", 0.0),
                 "tracking_ms": tracking_ms,
                 "privacy_ms": privacy_ms,
-                "draw_ms": 0.0,
+                "draw_ms": draw_ms,
                 "encode_ms": encode_ms,
                 "total_latency_ms": total_latency_ms,
             }
@@ -93,13 +104,28 @@ def main() -> int:
     elapsed = time.monotonic() - started
     fps = processed / max(0.001, elapsed)
     latencies = timings["total_latency_ms"]
+    if not latencies:
+        print("error: no frames processed", file=sys.stderr)
+        return 3
     print(f"frames: {processed}")
     print(f"detector: {detector.name}")
     print(f"npu_enabled: {str(detector.npu_enabled).lower()}")
     print(f"average_fps: {fps:.2f}")
     print(f"p50_latency_ms: {_percentile(latencies, 50):.1f}")
     print(f"p95_latency_ms: {_percentile(latencies, 95):.1f}")
-    for key in ("capture_ms", "preprocess_ms", "inference_ms", "postprocess_ms", "encode_ms"):
+    print(f"min_latency_ms: {min(latencies):.1f}")
+    print(f"max_latency_ms: {max(latencies):.1f}")
+    for key in (
+        "capture_ms",
+        "preprocess_ms",
+        "inference_ms",
+        "postprocess_ms",
+        "tracking_ms",
+        "privacy_ms",
+        "draw_ms",
+        "encode_ms",
+        "total_latency_ms",
+    ):
         print(f"avg_{key}: {_mean(timings[key]):.1f}")
     if detector.warning:
         print(f"warning: {detector.warning}")
@@ -118,6 +144,14 @@ def _mean(values: List[float]) -> float:
     if not values:
         return 0.0
     return float(statistics.fmean(values))
+
+
+def _draw_tracks(frame, tracks) -> None:
+    for track in tracks:
+        x1, y1, x2, y2 = [int(value) for value in track.bbox]
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (42, 166, 85), 2)
+        label = f"ID {track.track_id} {track.confidence:.2f}"
+        cv2.putText(frame, label, (x1, max(24, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (42, 166, 85), 2)
 
 
 def _ms(seconds: float) -> float:

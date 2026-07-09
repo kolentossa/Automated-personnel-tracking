@@ -11,12 +11,14 @@ models/*.rknn
 .mypy_cache/
 .ruff_cache/
 models/*.pt
+models/*.pth
 data/*.avi
 logs/*.jsonl
 models/*.engine
 models/*.weights
 models/*.bin
 models/*.data
+models/*.param
 models/*.params
 models/*.xml
 models/*.caffemodel
