@@ -218,6 +218,10 @@ GET  /                  Web dashboard
 GET  /video             MJPEG stream
 GET  /api/stats         JSON statistics
 GET  /api/health        Service and camera health
+GET  /api/config/counting
+                          Current counting-line and enter-direction config
+POST /api/config/counting
+                          Update counting-line and enter-direction config
 POST /api/reset-stats   Reset occupancy and crossing counters
 ```
 
@@ -288,6 +292,53 @@ camera:
 This keeps the Python processing pipeline unchanged while avoiding the OpenCV
 V4L2 issue. If the camera connector or overlay changes, update
 `camera.camera_device` and test with `/api/health`.
+
+### Web counting configuration
+
+The deployed dashboard can adjust the counting line and the ENTER direction
+without editing code or logging in with SSH.
+
+Open the Web UI:
+
+```text
+http://RK3588_IP:8000
+```
+
+Use the `Counting Configuration` panel:
+
+1. Click the video once to set the line start point.
+2. Click the video again to set the line end point.
+3. Choose `Left → Right` or `Right → Left` as the ENTER direction.
+4. Click `Save Configuration`.
+
+Direction changes are applied immediately by the Web UI. The saved values are
+persisted in `config.yaml`, so the same counting line and direction are kept
+after the FastAPI service restarts.
+
+The persisted config shape is:
+
+```yaml
+counting:
+  line:
+    x1: 640
+    y1: 0
+    x2: 640
+    y2: 720
+  direction:
+    mode: left_to_right
+  cooldown_frames: 20
+```
+
+API examples:
+
+```bash
+curl http://127.0.0.1:8000/api/config/counting
+
+curl -X POST http://127.0.0.1:8000/api/config/counting \
+  -H 'Content-Type: application/json' \
+  -d '{"line":{"x1":640,"y1":0,"x2":640,"y2":720},"direction":"left_to_right"}'
+```
+
 ### Person detector selection
 
 The motion detector is only a fallback for synthetic demos. It detects moving

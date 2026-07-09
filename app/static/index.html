@@ -18,7 +18,10 @@
 
       <section class="layout">
         <section class="video-panel" aria-label="Live camera stream">
-          <img id="video-stream" src="/video" alt="Live anonymised camera stream" />
+          <div class="video-wrap">
+            <img id="video-stream" src="/video" alt="Live anonymised camera stream" />
+            <canvas id="counting-overlay" aria-label="Counting line editor"></canvas>
+          </div>
         </section>
 
         <aside class="stats-panel" aria-label="Tracking statistics">
@@ -39,6 +42,20 @@
             <div><dt>NPU</dt><dd id="npu-enabled">-</dd></div>
             <div><dt>Privacy</dt><dd id="privacy">ON</dd></div>
           </dl>
+
+          <section class="counting-config" aria-label="Counting configuration">
+            <h2>Counting Configuration</h2>
+            <div class="line-readout">
+              <span>Line</span>
+              <strong id="counting-line">-</strong>
+            </div>
+            <div class="direction-toggle" role="radiogroup" aria-label="Enter direction">
+              <button class="direction-option" type="button" data-direction="left_to_right">Left → Right</button>
+              <button class="direction-option" type="button" data-direction="right_to_left">Right → Left</button>
+            </div>
+            <button id="save-counting-button" type="button">Save Configuration</button>
+            <p id="counting-config-state"></p>
+          </section>
 
           <button id="reset-button" type="button">Reset stats</button>
 

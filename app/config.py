@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Iterable
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = PROJECT_ROOT / "config.yaml"
@@ -56,7 +56,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
     "stream": {"jpeg_quality": 80, "width": 960, "height": 540},
     "tracking": {"iou_threshold": 0.3, "max_missing": 20, "min_confidence": 0.15},
-    "counting": {"line": "auto", "enter_direction": "positive_to_negative", "cooldown_frames": 20},
+    "counting": {
+        "line": {"x1": 640, "y1": 0, "x2": 640, "y2": 720},
+        "direction": {"mode": "left_to_right"},
+        "cooldown_frames": 20,
+    },
     "privacy": {"face_mosaic_enabled": True, "head_fallback_enabled": True, "mosaic_strength": 14},
 }
 
@@ -76,12 +80,75 @@ def project_path(value: str | Path) -> Path:
     return path.resolve()
 
 
+def save_counting_config(
+    line: Dict[str, Any],
+    direction: str,
+    cooldown_frames: int = 20,
+    path: Path = CONFIG_PATH,
+) -> None:
+    """Persist only the counting block while preserving the rest of config.yaml."""
+
+    block = _render_counting_block(line, direction, cooldown_frames)
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    path.write_text(_replace_top_level_block(text, "counting", block), encoding="utf-8")
+
+
 def _deep_update(target: Dict[str, Any], source: Dict[str, Any]) -> None:
     for key, value in source.items():
         if isinstance(value, dict) and isinstance(target.get(key), dict):
             _deep_update(target[key], value)
         else:
             target[key] = value
+
+
+def _render_counting_block(line: Dict[str, Any], direction: str, cooldown_frames: int) -> str:
+    return "\n".join(
+        [
+            "counting:",
+            "  line:",
+            f"    x1: {_format_number(line['x1'])}",
+            f"    y1: {_format_number(line['y1'])}",
+            f"    x2: {_format_number(line['x2'])}",
+            f"    y2: {_format_number(line['y2'])}",
+            "  direction:",
+            f"    mode: {direction}",
+            f"  cooldown_frames: {int(cooldown_frames)}",
+        ]
+    )
+
+
+def _replace_top_level_block(text: str, key: str, block: str) -> str:
+    lines = text.splitlines()
+    start = _find_top_level_key(lines, key)
+    block_lines = block.splitlines()
+    if start is None:
+        prefix = lines[:]
+        if prefix and prefix[-1].strip():
+            prefix.append("")
+        return "\n".join(prefix + block_lines) + "\n"
+
+    end = start + 1
+    while end < len(lines):
+        raw = lines[end]
+        if raw.strip() and not raw.startswith((" ", "\t")) and ":" in raw:
+            break
+        end += 1
+    return "\n".join(lines[:start] + block_lines + lines[end:]) + "\n"
+
+
+def _find_top_level_key(lines: Iterable[str], key: str) -> int | None:
+    prefix = f"{key}:"
+    for index, line in enumerate(lines):
+        if line.startswith(prefix):
+            return index
+    return None
+
+
+def _format_number(value: Any) -> str:
+    number = float(value)
+    if number.is_integer():
+        return str(int(number))
+    return f"{number:.3f}".rstrip("0").rstrip(".")
 
 
 def _parse_simple_yaml(text: str) -> Dict[str, Any]:

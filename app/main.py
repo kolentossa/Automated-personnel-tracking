@@ -10,12 +10,12 @@ from typing import Iterable, Optional
 
 import cv2
 import numpy as np
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.camera import CameraFrame, CameraSource
-from app.config import load_config
+from app.config import load_config, save_counting_config
 from app.detector import PersonDetector
 from app.privacy import apply_privacy_mosaic
 from app.stats import Line, StatsManager, TIMING_KEYS
@@ -58,7 +58,10 @@ class TrackingRuntime:
         detector_config = self.config.get("detector") or self.config.get("detection", {})
         self.detector = PersonDetector(detector_config, fallback_config=self.config.get("detection", {}))
         self.tracker = PersonTracker(self.config["tracking"])
-        self.stats = StatsManager(self.config["counting"])
+        counting_config = dict(self.config["counting"])
+        counting_config["_default_frame_width"] = int(self.config["camera"].get("width") or 960)
+        counting_config["_default_frame_height"] = int(self.config["camera"].get("height") or 540)
+        self.stats = StatsManager(counting_config)
         self.privacy_config = self.config["privacy"]
         self.performance_config = self.config.get("performance", {})
         self.stream_config = self.config.get("stream", {})
@@ -121,6 +124,25 @@ class TrackingRuntime:
     def reset_stats(self) -> dict:
         self.stats.reset()
         return self.stats.snapshot()
+
+    def get_counting_config(self) -> dict:
+        return self.stats.counting_config()
+
+    def update_counting_config(self, payload: dict) -> dict:
+        if not isinstance(payload, dict):
+            raise ValueError("request body must be a JSON object")
+        result = self.stats.configure_counting(payload.get("line"), str(payload.get("direction") or ""))
+        save_counting_config(
+            result["line"],
+            result["direction"],
+            int(result.get("cooldown_frames") or 20),
+        )
+        self.config["counting"] = {
+            "line": result["line"],
+            "direction": {"mode": result["direction"]},
+            "cooldown_frames": int(result.get("cooldown_frames") or 20),
+        }
+        return result
 
     def health(self) -> dict:
         stats = self.stats.snapshot()
@@ -369,6 +391,19 @@ def api_health():
 @app.post("/api/reset-stats")
 def api_reset_stats():
     return JSONResponse(runtime.reset_stats())
+
+
+@app.get("/api/config/counting")
+def api_get_counting_config():
+    return JSONResponse(runtime.get_counting_config())
+
+
+@app.post("/api/config/counting")
+def api_update_counting_config(payload: dict):
+    try:
+        return JSONResponse(runtime.update_counting_config(payload))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _mjpeg_stream():

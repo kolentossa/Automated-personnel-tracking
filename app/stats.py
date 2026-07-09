@@ -25,14 +25,24 @@ TIMING_KEYS = (
     "total_latency_ms",
 )
 
+DIRECTION_TO_ENTER = {
+    "left_to_right": "positive_to_negative",
+    "right_to_left": "negative_to_positive",
+}
+
+ENTER_TO_DIRECTION = {value: key for key, value in DIRECTION_TO_ENTER.items()}
+
 
 class StatsManager:
     def __init__(self, config: Dict[str, Any]) -> None:
         self.config = config
-        self.enter_direction = str(config.get("enter_direction") or "positive_to_negative")
+        self.direction_mode = _direction_mode_from_config(config)
+        self.enter_direction = DIRECTION_TO_ENTER[self.direction_mode]
         self.cooldown_frames = int(config.get("cooldown_frames") or 20)
         self._line_arg = config.get("line", "auto")
         self._line: Optional[Line] = None
+        self.frame_width = int(config.get("_default_frame_width") or 960)
+        self.frame_height = int(config.get("_default_frame_height") or 540)
         self._lock = threading.RLock()
         self._last_sides: Dict[int, int] = {}
         self._cooldowns: Dict[int, int] = {}
@@ -62,6 +72,8 @@ class StatsManager:
         height, width = int(frame_shape[0]), int(frame_shape[1])
         line = self.line_for_frame(width, height)
         with self._lock:
+            self.frame_width = width
+            self.frame_height = height
             self.active_tracks = len(track_list)
             self.visible_persons = len(track_list)
             for track in track_list:
@@ -125,6 +137,32 @@ class StatsManager:
             self._last_sides.clear()
             self._cooldowns.clear()
 
+    def configure_counting(self, line: Dict[str, Any], direction: str) -> dict:
+        line_dict = _coerce_line_dict(line)
+        direction_mode = _normalize_direction_mode(direction)
+        parsed_line = _parse_line(line_dict, self.frame_width, self.frame_height)
+        with self._lock:
+            self._line_arg = line_dict
+            self._line = parsed_line
+            self.direction_mode = direction_mode
+            self.enter_direction = DIRECTION_TO_ENTER[direction_mode]
+            self.config["line"] = line_dict
+            self.config["direction"] = {"mode": direction_mode}
+            self.config.pop("enter_direction", None)
+            self._last_sides.clear()
+            self._cooldowns.clear()
+            return self.counting_config()
+
+    def counting_config(self) -> dict:
+        with self._lock:
+            line = self._line or _parse_line(self._line_arg, self.frame_width, self.frame_height)
+            return {
+                "line": _line_as_dict(line),
+                "direction": self.direction_mode,
+                "cooldown_frames": self.cooldown_frames,
+                "frame_size": {"width": self.frame_width, "height": self.frame_height},
+            }
+
     def snapshot(self) -> dict:
         with self._lock:
             line = self._line
@@ -186,6 +224,9 @@ def _parse_line(value: Any, width: int, height: int) -> Line:
     if not value or str(value).lower() == "auto":
         x = width / 2.0
         return (x, 0.0), (x, float(height))
+    if isinstance(value, dict):
+        parts = [float(value[key]) for key in ("x1", "y1", "x2", "y2")]
+        return (parts[0], parts[1]), (parts[2], parts[3])
     if isinstance(value, list) and len(value) == 4:
         parts = [float(item) for item in value]
     else:
@@ -216,3 +257,46 @@ def _line_as_list(line: Optional[Line]) -> list:
     if line is None:
         return []
     return [[line[0][0], line[0][1]], [line[1][0], line[1][1]]]
+
+
+def _line_as_dict(line: Line) -> dict:
+    return {
+        "x1": _clean_number(line[0][0]),
+        "y1": _clean_number(line[0][1]),
+        "x2": _clean_number(line[1][0]),
+        "y2": _clean_number(line[1][1]),
+    }
+
+
+def _coerce_line_dict(value: Dict[str, Any]) -> dict:
+    if not isinstance(value, dict):
+        raise ValueError("line must be an object with x1, y1, x2, y2")
+    line = {key: float(value[key]) for key in ("x1", "y1", "x2", "y2")}
+    if line["x1"] == line["x2"] and line["y1"] == line["y2"]:
+        raise ValueError("counting line start and end points must be different")
+    return {key: _clean_number(number) for key, number in line.items()}
+
+
+def _direction_mode_from_config(config: Dict[str, Any]) -> str:
+    direction = config.get("direction")
+    if isinstance(direction, dict):
+        mode = direction.get("mode")
+    else:
+        mode = direction
+    if mode:
+        return _normalize_direction_mode(str(mode))
+    return ENTER_TO_DIRECTION.get(str(config.get("enter_direction") or ""), "left_to_right")
+
+
+def _normalize_direction_mode(value: str) -> str:
+    direction = str(value or "").strip().lower()
+    if direction not in DIRECTION_TO_ENTER:
+        raise ValueError("direction must be left_to_right or right_to_left")
+    return direction
+
+
+def _clean_number(value: float) -> int | float:
+    number = float(value)
+    if number.is_integer():
+        return int(number)
+    return round(number, 3)

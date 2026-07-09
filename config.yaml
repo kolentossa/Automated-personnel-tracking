@@ -51,10 +51,14 @@ tracking:
   min_confidence: 0.15
 
 counting:
-  line: auto
-  enter_direction: positive_to_negative
+  line:
+    x1: 640
+    y1: 0
+    x2: 640
+    y2: 720
+  direction:
+    mode: left_to_right
   cooldown_frames: 20
-
 privacy:
   face_mosaic_enabled: true
   head_fallback_enabled: true
