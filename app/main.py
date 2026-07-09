@@ -14,11 +14,11 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.camera import CameraSource
+from app.camera import CameraFrame, CameraSource
 from app.config import load_config
 from app.detector import PersonDetector
 from app.privacy import apply_privacy_mosaic
-from app.stats import Line, StatsManager
+from app.stats import Line, StatsManager, TIMING_KEYS
 from app.tracker import PersonTracker
 from vision.types import Detection, TrackedPerson
 
@@ -50,50 +50,64 @@ def _wrap_text(value: str, size: int) -> list[str]:
         lines.append(current)
     return lines or [""]
 
+
 class TrackingRuntime:
     def __init__(self) -> None:
         self.config = load_config()
         self.camera = CameraSource(self.config["camera"])
-        self.detector = PersonDetector(self.config["detection"])
+        detector_config = self.config.get("detector") or self.config.get("detection", {})
+        self.detector = PersonDetector(detector_config, fallback_config=self.config.get("detection", {}))
         self.tracker = PersonTracker(self.config["tracking"])
         self.stats = StatsManager(self.config["counting"])
         self.privacy_config = self.config["privacy"]
+        self.performance_config = self.config.get("performance", {})
+        self.target_fps = float(self.performance_config.get("target_fps") or 30)
+        self.detect_every_n_frames = max(1, int(self.performance_config.get("detect_every_n_frames") or 1))
         self._lock = threading.RLock()
         self._stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
+        self._camera_thread: Optional[threading.Thread] = None
+        self._processing_thread: Optional[threading.Thread] = None
         self._latest_jpeg = _placeholder_jpeg("Starting camera tracking service")
+        self._latest_camera_frame: Optional[CameraFrame] = None
+        self._latest_camera_frame_id = 0
+        self._last_capture_ms = 0.0
+        self._last_detections: list[Detection] = []
         self._frame_index = 0
         self._fps = 0.0
         self._fps_count = 0
         self._fps_started = time.monotonic()
+        self._update_runtime(
+            fps=0.0,
+            timings=_blank_timings(),
+            camera_status=self.camera.status,
+            source=self.camera.selected_source,
+            running=False,
+            last_error=self.detector.warning,
+        )
 
     def start(self) -> None:
         with self._lock:
-            if self._thread and self._thread.is_alive():
+            if self._camera_thread and self._camera_thread.is_alive():
                 return
             self._stop_event.clear()
-            self._thread = threading.Thread(target=self._run, name="rk3588-camera-web-tracking", daemon=True)
-            self._thread.start()
+            self._camera_thread = threading.Thread(target=self._camera_loop, name="rk3588-camera-capture", daemon=True)
+            self._processing_thread = threading.Thread(target=self._processing_loop, name="rk3588-camera-processing", daemon=True)
+            self._camera_thread.start()
+            self._processing_thread.start()
 
     def stop(self) -> None:
         self._stop_event.set()
-        thread = self._thread
-        if thread and thread.is_alive():
-            thread.join(timeout=5.0)
+        for thread in (self._camera_thread, self._processing_thread):
+            if thread and thread.is_alive():
+                thread.join(timeout=5.0)
         self.camera.release()
-        self.stats.update_runtime(
+        self._update_runtime(
             fps=self._fps,
-            latency_ms=0.0,
-            frame_index=self._frame_index,
+            timings=_blank_timings(),
             camera_status="offline",
             source=self.camera.selected_source,
-            model=self.detector.model_path,
-            detector=self.detector.name,
             running=False,
-            privacy_mode=bool(self.privacy_config.get("face_mosaic_enabled", True)),
-            face_mosaic_enabled=bool(self.privacy_config.get("face_mosaic_enabled", True)),
             last_error=self.camera.error,
-            available_cameras=self.camera.available_devices,
         )
 
     def get_latest_jpeg(self) -> bytes:
@@ -107,7 +121,7 @@ class TrackingRuntime:
     def health(self) -> dict:
         stats = self.stats.snapshot()
         ok = bool(stats.get("running")) and stats.get("camera_status") == "online" and not stats.get("last_error")
-        return {
+        data = {
             "status": "ok" if ok else "error",
             "running": stats.get("running", False),
             "camera_status": stats.get("camera_status", "offline"),
@@ -116,48 +130,105 @@ class TrackingRuntime:
             "latency_ms": stats.get("latency_ms", 0.0),
             "error": stats.get("last_error", ""),
             "available_cameras": stats.get("available_cameras", []),
+            "detector": stats.get("detector", ""),
+            "npu_enabled": stats.get("npu_enabled", False),
         }
+        for key in TIMING_KEYS:
+            data[key] = stats.get(key, 0.0)
+        return data
 
-    def _run(self) -> None:
+    def stream_interval(self) -> float:
+        return 1.0 / max(1.0, min(60.0, self.target_fps))
+
+    def _camera_loop(self) -> None:
         while not self._stop_event.is_set():
+            started = time.monotonic()
             frame_packet = self.camera.read()
+            capture_ms = (time.monotonic() - started) * 1000.0
             if frame_packet is None:
                 self._publish_error(self.camera.error or "Waiting for a readable camera frame")
                 time.sleep(0.2)
                 continue
+            with self._lock:
+                self._latest_camera_frame = frame_packet
+                self._latest_camera_frame_id += 1
+                self._last_capture_ms = round(capture_ms, 1)
+            time.sleep(0.001)
+
+    def _processing_loop(self) -> None:
+        last_processed_frame_id = 0
+        while not self._stop_event.is_set():
+            with self._lock:
+                frame_packet = self._latest_camera_frame
+                frame_id = self._latest_camera_frame_id
+                capture_ms = self._last_capture_ms
+            if frame_packet is None or frame_id == last_processed_frame_id:
+                time.sleep(0.003)
+                continue
+            last_processed_frame_id = frame_id
             try:
-                frame = frame_packet.frame
-                detections = self.detector.detect(frame)
-                tracks = self.tracker.update(detections)
-                self.stats.update_tracks(tracks, frame.shape[:2])
-                display = self._prepare_display_frame(frame, tracks, detections)
-                line = self.stats.current_line()
-                self._draw_overlay(display, tracks, line)
-                ok, encoded = cv2.imencode(".jpg", display, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
-                if not ok:
-                    raise RuntimeError("Could not encode JPEG frame")
-                latency_ms = (time.monotonic() - frame_packet.captured_at) * 1000.0
-                self._frame_index += 1
-                self._update_fps()
-                with self._lock:
-                    self._latest_jpeg = encoded.tobytes()
-                self.stats.update_runtime(
-                    fps=self._fps,
-                    latency_ms=latency_ms,
-                    frame_index=self._frame_index,
-                    camera_status=self.camera.status,
-                    source=frame_packet.source,
-                    model=self.detector.model_path,
-                    detector=self.detector.name,
-                    running=True,
-                    privacy_mode=bool(self.privacy_config.get("face_mosaic_enabled", True)),
-                    face_mosaic_enabled=bool(self.privacy_config.get("face_mosaic_enabled", True)),
-                    last_error=self.detector.warning,
-                    available_cameras=self.camera.available_devices,
-                )
+                self._process_frame(frame_packet, capture_ms)
             except Exception as exc:
                 self._publish_error(str(exc))
-                time.sleep(0.1)
+                time.sleep(0.05)
+
+    def _process_frame(self, frame_packet: CameraFrame, capture_ms: float) -> None:
+        frame = frame_packet.frame
+        detect_this_frame = (self._frame_index % self.detect_every_n_frames) == 0 or not self._last_detections
+
+        if detect_this_frame:
+            detections = self.detector.detect(frame)
+            detector_profile = dict(self.detector.last_profile)
+            self._last_detections = detections
+        else:
+            detections = list(self._last_detections)
+            detector_profile = {"preprocess_ms": 0.0, "inference_ms": 0.0, "postprocess_ms": 0.0}
+
+        tracking_started = time.monotonic()
+        tracks = self.tracker.update(detections)
+        self.stats.update_tracks(tracks, frame.shape[:2])
+        tracking_ms = _ms(time.monotonic() - tracking_started)
+
+        privacy_started = time.monotonic()
+        display = self._prepare_display_frame(frame, tracks, detections)
+        privacy_ms = _ms(time.monotonic() - privacy_started)
+
+        draw_started = time.monotonic()
+        line = self.stats.current_line()
+        self._draw_overlay(display, tracks, line)
+        draw_ms = _ms(time.monotonic() - draw_started)
+
+        encode_started = time.monotonic()
+        ok, encoded = cv2.imencode(".jpg", display, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+        encode_ms = _ms(time.monotonic() - encode_started)
+        if not ok:
+            raise RuntimeError("Could not encode JPEG frame")
+
+        self._frame_index += 1
+        self._update_fps()
+        with self._lock:
+            self._latest_jpeg = encoded.tobytes()
+
+        total_latency_ms = _ms(time.monotonic() - frame_packet.captured_at)
+        timings = {
+            "capture_ms": capture_ms,
+            "preprocess_ms": detector_profile.get("preprocess_ms", 0.0),
+            "inference_ms": detector_profile.get("inference_ms", 0.0),
+            "postprocess_ms": detector_profile.get("postprocess_ms", 0.0),
+            "tracking_ms": tracking_ms,
+            "privacy_ms": privacy_ms,
+            "draw_ms": draw_ms,
+            "encode_ms": encode_ms,
+            "total_latency_ms": total_latency_ms,
+        }
+        self._update_runtime(
+            fps=self._fps,
+            timings=timings,
+            camera_status=self.camera.status,
+            source=frame_packet.source,
+            running=True,
+            last_error=self.detector.warning,
+        )
 
     def _prepare_display_frame(
         self,
@@ -189,30 +260,59 @@ class TrackingRuntime:
     def _publish_error(self, message: str) -> None:
         with self._lock:
             self._latest_jpeg = _placeholder_jpeg(message)
-        self.stats.update_runtime(
+        self._update_runtime(
             fps=0.0,
-            latency_ms=0.0,
-            frame_index=self._frame_index,
+            timings=_blank_timings(),
             camera_status=self.camera.status,
             source=self.camera.selected_source,
+            running=True,
+            last_error=message,
+        )
+
+    def _update_runtime(
+        self,
+        *,
+        fps: float,
+        timings: dict,
+        camera_status: str,
+        source: str,
+        running: bool,
+        last_error: str,
+    ) -> None:
+        self.stats.update_runtime(
+            fps=fps,
+            latency_ms=float(timings.get("total_latency_ms", 0.0) or 0.0),
+            frame_index=self._frame_index,
+            camera_status=camera_status,
+            source=source,
             model=self.detector.model_path,
             detector=self.detector.name,
-            running=True,
+            npu_enabled=self.detector.npu_enabled,
+            running=running,
             privacy_mode=bool(self.privacy_config.get("face_mosaic_enabled", True)),
             face_mosaic_enabled=bool(self.privacy_config.get("face_mosaic_enabled", True)),
-            last_error=message,
+            last_error=last_error,
             available_cameras=self.camera.available_devices,
+            timings=timings,
         )
 
     def _update_fps(self) -> None:
         self._fps_count += 1
-        if self._fps_count < 10:
-            return
         now = time.monotonic()
-        elapsed = max(0.001, now - self._fps_started)
-        self._fps = self._fps_count / elapsed
+        elapsed = now - self._fps_started
+        if elapsed < 1.0:
+            return
+        self._fps = self._fps_count / max(0.001, elapsed)
         self._fps_count = 0
         self._fps_started = now
+
+
+def _blank_timings() -> dict:
+    return {key: 0.0 for key in TIMING_KEYS}
+
+
+def _ms(seconds: float) -> float:
+    return round(float(seconds) * 1000.0, 1)
 
 
 runtime = TrackingRuntime()
@@ -227,7 +327,7 @@ async def lifespan(_: FastAPI):
         runtime.stop()
 
 
-app = FastAPI(title="RK3588 Personnel Tracking", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="RK3588 Personnel Tracking", version="0.3.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC_ROOT)), name="static")
 
 
@@ -260,4 +360,4 @@ def _mjpeg_stream():
     while not runtime._stop_event.is_set():
         frame = runtime.get_latest_jpeg()
         yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
-        time.sleep(0.05)
+        time.sleep(runtime.stream_interval())

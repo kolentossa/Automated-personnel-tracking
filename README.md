@@ -250,11 +250,11 @@ backend and automatically probes `/dev/video*`. If a sensor is present but
 OpenCV cannot read that board-specific RKISP node, `/api/health` and the Web
 page report the error instead of crashing.
 
-Detection uses the existing local demo detector path. If `detection.model_path`
-points to a local ONNX model, OpenCV DNN YOLO is used and only the person class
-is kept. If no model is configured or the file is missing, the app falls back to
-the existing no-model motion person detector. RKNN/NPU inference is intentionally
-left behind the detector interface for the next deployment step.
+Detection uses the configured local detector path. The deployment path is
+`detector.type: rknn-yolo` with a YOLO RKNN model under `models/`. The legacy
+`detection` section remains as an optional CPU fallback configuration for
+MobileNetSSD or ONNX models. Motion fallback is disabled by default so moving
+non-person objects are not counted as people.
 
 Privacy behavior:
 
@@ -292,8 +292,24 @@ V4L2 issue. If the camera connector or overlay changes, update
 
 The motion detector is only a fallback for synthetic demos. It detects moving
 foreground blobs and will mark non-person moving objects, so it should not be
-used for the live camera deployment. The RK3588 MVP now defaults to OpenCV DNN
-MobileNetSSD Caffe and keeps only VOC class `person`:
+used for the live camera deployment. The RK3588 optimized path defaults to
+RKNN YOLO on the NPU and keeps only COCO class `person`:
+
+```yaml
+detector:
+  type: rknn-yolo
+  model_path: models/yolov8n.rknn
+  model_family: yolov8
+  input_size: 640
+  confidence_threshold: 0.35
+  nms_threshold: 0.45
+  class_filter: ["person"]
+  fallback_to_cpu: false
+```
+
+The CPU fallback remains available when `detector.fallback_to_cpu` is set to
+`true`. It uses OpenCV DNN MobileNetSSD Caffe and keeps only VOC class
+`person`:
 
 ```yaml
 detection:
@@ -306,3 +322,63 @@ detection:
 The `.caffemodel` and `.prototxt` files stay under `models/` on the board and
 are ignored by Git. This avoids committing large model artifacts while keeping
 the runtime fully local.
+
+### RKNN YOLO NPU deployment
+
+Convert the model on an x86 Linux workstation, then copy only the final `.rknn`
+file to the RK3588 board. Do not commit model files to Git.
+
+Example workstation flow:
+
+```bash
+python3 -m venv .venv-rknn-convert
+. .venv-rknn-convert/bin/activate
+python -m pip install ultralytics onnx rknn-toolkit2
+yolo export model=yolov8n.pt format=onnx imgsz=640 opset=12 simplify=True
+```
+
+Use the Rockchip RKNN Toolkit 2 conversion script for the board target
+`rk3588`, using representative calibration images if the model is quantized.
+The converted file should be named:
+
+```text
+models/yolov8n.rknn
+```
+
+Copy the converted model to the board:
+
+```bash
+scp models/yolov8n.rknn cat@RK3588_IP:/home/cat/projects/person-tracking/models/
+```
+
+Run the Web service on the RK3588:
+
+```bash
+cd ~/projects/person-tracking
+source .venv/bin/activate
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+Then open:
+
+```text
+http://RK3588_IP:8000
+```
+
+Check NPU status and latency:
+
+```bash
+curl http://127.0.0.1:8000/api/health
+python scripts/benchmark_pipeline.py --frames 300
+```
+
+Expected optimized health fields after `models/yolov8n.rknn` is present:
+
+```json
+{
+  "detector": "rknn-yolov8n",
+  "npu_enabled": true,
+  "inference_ms": 30.0,
+  "total_latency_ms": 40.0
+}
+```

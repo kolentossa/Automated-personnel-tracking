@@ -7,10 +7,12 @@ const fields = {
   totalExited: document.querySelector("#total-exited"),
   activeTracks: document.querySelector("#active-tracks"),
   fps: document.querySelector("#fps"),
-  latencyMs: document.querySelector("#latency-ms"),
+  totalLatencyMs: document.querySelector("#total-latency-ms"),
+  inferenceMs: document.querySelector("#inference-ms"),
   cameraStatus: document.querySelector("#camera-status"),
   source: document.querySelector("#source"),
   detector: document.querySelector("#detector"),
+  npuEnabled: document.querySelector("#npu-enabled"),
   privacy: document.querySelector("#privacy"),
   events: document.querySelector("#events"),
 };
@@ -59,9 +61,11 @@ function renderStats(stats) {
   fields.totalExited.textContent = stats.total_exited ?? 0;
   fields.activeTracks.textContent = stats.active_tracks ?? 0;
   fields.fps.textContent = stats.fps ?? 0;
-  fields.latencyMs.textContent = stats.latency_ms ?? 0;
+  fields.totalLatencyMs.textContent = stats.total_latency_ms ?? stats.latency_ms ?? 0;
+  fields.inferenceMs.textContent = stats.inference_ms ?? 0;
   fields.source.textContent = stats.source || "-";
   fields.detector.textContent = stats.detector || "-";
+  fields.npuEnabled.textContent = stats.npu_enabled ? "ON" : "OFF";
   fields.privacy.textContent = stats.face_mosaic_enabled ? "ON - face/head mosaic" : "OFF";
   renderEvents(stats.recent_events || []);
   setStatus(stats);

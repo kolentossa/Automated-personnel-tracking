@@ -12,6 +12,18 @@ from vision.types import TrackedPerson, bbox_centroid
 Point = Tuple[float, float]
 Line = Tuple[Point, Point]
 
+TIMING_KEYS = (
+    "capture_ms",
+    "preprocess_ms",
+    "inference_ms",
+    "postprocess_ms",
+    "tracking_ms",
+    "privacy_ms",
+    "draw_ms",
+    "encode_ms",
+    "total_latency_ms",
+)
+
 
 class StatsManager:
     def __init__(self, config: Dict[str, Any]) -> None:
@@ -37,10 +49,12 @@ class StatsManager:
         self.source = ""
         self.model = ""
         self.detector = ""
+        self.npu_enabled = False
         self.running = False
         self.privacy_mode = True
         self.face_mosaic_enabled = True
         self.available_cameras = []
+        self.timings: Dict[str, float] = {key: 0.0 for key in TIMING_KEYS}
 
     def update_tracks(self, tracks: Iterable[TrackedPerson], frame_shape: Sequence[int]) -> None:
         track_list = list(tracks)
@@ -79,6 +93,8 @@ class StatsManager:
         face_mosaic_enabled: bool,
         last_error: str,
         available_cameras: list,
+        npu_enabled: bool = False,
+        timings: Optional[Dict[str, float]] = None,
     ) -> None:
         with self._lock:
             self.fps = round(float(fps), 2)
@@ -88,11 +104,16 @@ class StatsManager:
             self.source = source
             self.model = model
             self.detector = detector
+            self.npu_enabled = bool(npu_enabled)
             self.running = running
             self.privacy_mode = privacy_mode
             self.face_mosaic_enabled = face_mosaic_enabled
             self.last_error = last_error
             self.available_cameras = available_cameras
+            if timings is not None:
+                for key in TIMING_KEYS:
+                    self.timings[key] = round(float(timings.get(key, 0.0) or 0.0), 1)
+                self.latency_ms = self.timings["total_latency_ms"] or self.latency_ms
 
     def reset(self) -> None:
         with self._lock:
@@ -106,7 +127,7 @@ class StatsManager:
     def snapshot(self) -> dict:
         with self._lock:
             line = self._line
-            return {
+            data = {
                 "current_occupancy": self.current_occupancy,
                 "total_entered": self.total_entered,
                 "total_exited": self.total_exited,
@@ -119,6 +140,7 @@ class StatsManager:
                 "source": self.source,
                 "model": self.model,
                 "detector": self.detector,
+                "npu_enabled": self.npu_enabled,
                 "privacy_mode": self.privacy_mode,
                 "face_mosaic_enabled": self.face_mosaic_enabled,
                 "running": self.running,
@@ -127,6 +149,10 @@ class StatsManager:
                 "recent_events": list(self._events),
                 "available_cameras": self.available_cameras,
             }
+            data.update(self.timings)
+            if not data["total_latency_ms"]:
+                data["total_latency_ms"] = self.latency_ms
+            return data
 
     def line_for_frame(self, width: int, height: int) -> Line:
         if self._line is None:

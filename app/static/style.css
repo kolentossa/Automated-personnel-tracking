@@ -34,7 +34,7 @@ h1 { font-size: 1.8rem; letter-spacing: 0; }
 .metric small { font-size: 0.9rem; color: var(--muted); }
 #current-occupancy, #total-entered { color: var(--green); }
 #total-exited { color: var(--red); }
-#latency-ms, #active-tracks, #fps { color: var(--blue); }
+#total-latency-ms, #inference-ms, #active-tracks, #fps { color: var(--blue); }
 .details { margin: 14px 0 0; display: grid; gap: 8px; }
 .details div { border-bottom: 1px solid var(--line); padding-bottom: 8px; }
 .details dd { margin: 4px 0 0; overflow-wrap: anywhere; }

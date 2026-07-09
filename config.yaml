@@ -9,10 +9,20 @@ camera:
   auto_detect: true
   width: 1280
   height: 720
-  fps: 15
+  fps: 30
   retry_interval_sec: 3.0
   gstreamer_pipeline: "v4l2src device={device} ! video/x-raw,format=NV12,width={width},height={height} ! videoconvert ! video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false"
   video_file: data/sample.mp4
+
+detector:
+  type: rknn-yolo
+  model_path: models/yolov8n.rknn
+  model_family: yolov8
+  input_size: 640
+  confidence_threshold: 0.35
+  nms_threshold: 0.45
+  class_filter: ["person"]
+  fallback_to_cpu: false
 
 detection:
   model_path: models/MobileNetSSD_deploy.caffemodel
@@ -22,6 +32,13 @@ detection:
   nms_threshold: 0.45
   motion_min_area: 500
   allow_motion_fallback: false
+
+performance:
+  target_fps: 30
+  target_latency_ms: 30
+  latest_frame_only: true
+  queue_size: 1
+  detect_every_n_frames: 1
 
 tracking:
   iou_threshold: 0.3
