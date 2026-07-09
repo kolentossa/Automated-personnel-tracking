@@ -15,11 +15,13 @@ camera:
   video_file: data/sample.mp4
 
 detection:
-  model_path: ""
-  confidence_threshold: 0.35
-  input_size: 640
+  model_path: models/MobileNetSSD_deploy.caffemodel
+  model_config_path: models/MobileNetSSD_deploy.prototxt
+  confidence_threshold: 0.45
+  input_size: 300
   nms_threshold: 0.45
   motion_min_area: 500
+  allow_motion_fallback: false
 
 tracking:
   iou_threshold: 0.3

@@ -288,3 +288,21 @@ camera:
 This keeps the Python processing pipeline unchanged while avoiding the OpenCV
 V4L2 issue. If the camera connector or overlay changes, update
 `camera.camera_device` and test with `/api/health`.
+### Person detector selection
+
+The motion detector is only a fallback for synthetic demos. It detects moving
+foreground blobs and will mark non-person moving objects, so it should not be
+used for the live camera deployment. The RK3588 MVP now defaults to OpenCV DNN
+MobileNetSSD Caffe and keeps only VOC class `person`:
+
+```yaml
+detection:
+  model_path: models/MobileNetSSD_deploy.caffemodel
+  model_config_path: models/MobileNetSSD_deploy.prototxt
+  confidence_threshold: 0.45
+  input_size: 300
+```
+
+The `.caffemodel` and `.prototxt` files stay under `models/` on the board and
+are ignored by Git. This avoids committing large model artifacts while keeping
+the runtime fully local.

@@ -19,3 +19,5 @@ models/*.bin
 models/*.data
 models/*.params
 models/*.xml
+models/*.caffemodel
+models/*.prototxt
