@@ -54,6 +54,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "queue_size": 1,
         "detect_every_n_frames": 1,
     },
+    "stream": {"jpeg_quality": 80, "width": 960, "height": 540},
     "tracking": {"iou_threshold": 0.3, "max_missing": 20, "min_confidence": 0.15},
     "counting": {"line": "auto", "enter_direction": "positive_to_negative", "cooldown_frames": 20},
     "privacy": {"face_mosaic_enabled": True, "head_fallback_enabled": True, "mosaic_strength": 14},

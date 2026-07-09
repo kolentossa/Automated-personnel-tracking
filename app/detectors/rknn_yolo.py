@@ -21,6 +21,7 @@ class RKNNYoloDetector:
     """
 
     PERSON_CLASS_ID = 0
+    MAX_CANDIDATES = 300
 
     def __init__(
         self,
@@ -131,49 +132,51 @@ class RKNNYoloDetector:
         tensors = outputs if isinstance(outputs, (list, tuple)) else []
         if len(tensors) < 6 or len(tensors) % 3 != 0:
             return None
-        arrays = [np.asarray(tensor, dtype=np.float32) for tensor in tensors]
+        arrays = [_as_float32(tensor) for tensor in tensors]
         if not all(array.ndim == 4 for array in arrays[:6]):
             return None
 
         branch_count = 3
         pair_per_branch = len(arrays) // branch_count
-        box_outputs: List[np.ndarray] = []
-        class_outputs: List[np.ndarray] = []
+        branch_boxes: List[np.ndarray] = []
+        branch_scores: List[np.ndarray] = []
         for branch_index in range(branch_count):
             box_tensor = arrays[pair_per_branch * branch_index]
             class_tensor = arrays[pair_per_branch * branch_index + 1]
             if box_tensor.shape[1] % 4 != 0 or class_tensor.shape[1] < 1:
                 return None
-            box_outputs.append(_yolov8_box_process(box_tensor, self.input_size))
-            class_outputs.append(class_tensor)
+            person_map = class_tensor[0, self.PERSON_CLASS_ID]
+            ys, xs = np.where(person_map >= self.confidence_threshold)
+            if ys.size == 0:
+                continue
+            scores = person_map[ys, xs].astype(np.float32, copy=False)
+            branch_boxes.append(_yolov8_box_process_selected(box_tensor[0], ys, xs, self.input_size))
+            branch_scores.append(scores)
 
-        boxes = np.concatenate([_flatten_head(item) for item in box_outputs], axis=0)
-        class_conf = np.concatenate([_flatten_head(item) for item in class_outputs], axis=0)
-        if class_conf.shape[1] <= self.PERSON_CLASS_ID:
+        if not branch_boxes:
             return []
 
-        person_scores = class_conf[:, self.PERSON_CLASS_ID]
-        keep_candidates = np.where(person_scores >= self.confidence_threshold)[0]
-        if keep_candidates.size == 0:
-            return []
+        boxes = np.concatenate(branch_boxes, axis=0)
+        scores = np.concatenate(branch_scores, axis=0)
+        if scores.size > self.MAX_CANDIDATES:
+            top = np.argpartition(scores, -self.MAX_CANDIDATES)[-self.MAX_CANDIDATES :]
+            order = top[np.argsort(scores[top])[::-1]]
+            boxes = boxes[order]
+            scores = scores[order]
 
-        boxes = boxes[keep_candidates]
-        confidences = [float(score) for score in person_scores[keep_candidates]]
         height, width = int(frame_shape[0]), int(frame_shape[1])
-        boxes_xywh: List[List[int]] = []
-        boxes_xyxy: List[Tuple[float, float, float, float]] = []
-        for box in boxes:
-            x1, y1, x2, y2 = _scale_box_from_letterbox(box, ratio, pad, width, height)
-            boxes_xyxy.append((x1, y1, x2, y2))
-            boxes_xywh.append([int(round(x1)), int(round(y1)), int(round(x2 - x1)), int(round(y2 - y1))])
+        boxes_xyxy = _scale_boxes_from_letterbox(boxes, ratio, pad, width, height)
+        valid = (boxes_xyxy[:, 2] > boxes_xyxy[:, 0]) & (boxes_xyxy[:, 3] > boxes_xyxy[:, 1])
+        if not np.any(valid):
+            return []
+        boxes_xyxy = boxes_xyxy[valid]
+        scores = scores[valid]
 
-        keep = _nms(boxes_xywh, confidences, self.confidence_threshold, self.nms_threshold)
+        keep = _nms_xyxy(boxes_xyxy, scores, self.nms_threshold)
         detections = [
-            Detection(boxes_xyxy[index], confidences[index], self.PERSON_CLASS_ID, "person")
+            Detection(tuple(float(value) for value in boxes_xyxy[index]), float(scores[index]), self.PERSON_CLASS_ID, "person")
             for index in keep
-            if boxes_xyxy[index][2] > boxes_xyxy[index][0] and boxes_xyxy[index][3] > boxes_xyxy[index][1]
         ]
-        detections.sort(key=lambda item: item.confidence, reverse=True)
         return detections
 
     def _decode_row(self, row: np.ndarray) -> Optional[Tuple[float, float, float, float, float]]:
@@ -265,6 +268,13 @@ def _rows_from_outputs(outputs: Any) -> List[np.ndarray]:
     return rows
 
 
+def _as_float32(value: Any) -> np.ndarray:
+    arr = np.asarray(value)
+    if arr.dtype == np.float32:
+        return arr
+    return arr.astype(np.float32, copy=False)
+
+
 def _yolov8_box_process(position: np.ndarray, input_size: int) -> np.ndarray:
     _, channels, grid_h, grid_w = position.shape
     reg_max = channels // 4
@@ -281,6 +291,28 @@ def _yolov8_box_process(position: np.ndarray, input_size: int) -> np.ndarray:
     box_xy1 = grid + 0.5 - distance[:, 0:2, :, :]
     box_xy2 = grid + 0.5 + distance[:, 2:4, :, :]
     return np.concatenate((box_xy1 * stride, box_xy2 * stride), axis=1)
+
+
+def _yolov8_box_process_selected(position: np.ndarray, ys: np.ndarray, xs: np.ndarray, input_size: int) -> np.ndarray:
+    channels, grid_h, grid_w = position.shape
+    reg_max = channels // 4
+    logits = position.reshape(4, reg_max, grid_h, grid_w)[:, :, ys, xs]
+    probs = _softmax(logits, axis=1)
+    bins = np.arange(reg_max, dtype=np.float32).reshape(1, reg_max, 1)
+    distance = (probs * bins).sum(axis=1)
+    grid_x = xs.astype(np.float32, copy=False) + 0.5
+    grid_y = ys.astype(np.float32, copy=False) + 0.5
+    stride_x = float(input_size) / float(grid_w)
+    stride_y = float(input_size) / float(grid_h)
+    return np.stack(
+        (
+            (grid_x - distance[0]) * stride_x,
+            (grid_y - distance[1]) * stride_y,
+            (grid_x + distance[2]) * stride_x,
+            (grid_y + distance[3]) * stride_y,
+        ),
+        axis=1,
+    )
 
 
 def _flatten_head(value: np.ndarray) -> np.ndarray:
@@ -312,6 +344,48 @@ def _scale_box_from_letterbox(
         max(0.0, min(float(width), x2)),
         max(0.0, min(float(height), y2)),
     )
+
+
+def _scale_boxes_from_letterbox(
+    boxes: np.ndarray,
+    ratio: float,
+    pad: Tuple[float, float],
+    width: int,
+    height: int,
+) -> np.ndarray:
+    scaled = boxes.astype(np.float32, copy=True)
+    scaled[:, [0, 2]] = (scaled[:, [0, 2]] - float(pad[0])) / float(ratio)
+    scaled[:, [1, 3]] = (scaled[:, [1, 3]] - float(pad[1])) / float(ratio)
+    scaled[:, [0, 2]] = np.clip(scaled[:, [0, 2]], 0.0, float(width))
+    scaled[:, [1, 3]] = np.clip(scaled[:, [1, 3]], 0.0, float(height))
+    return scaled
+
+
+def _nms_xyxy(boxes: np.ndarray, scores: np.ndarray, nms_threshold: float) -> List[int]:
+    if boxes.size == 0:
+        return []
+    x1 = boxes[:, 0]
+    y1 = boxes[:, 1]
+    x2 = boxes[:, 2]
+    y2 = boxes[:, 3]
+    areas = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
+    order = scores.argsort()[::-1]
+    keep: List[int] = []
+    while order.size > 0:
+        current = int(order[0])
+        keep.append(current)
+        if order.size == 1:
+            break
+        rest = order[1:]
+        xx1 = np.maximum(x1[current], x1[rest])
+        yy1 = np.maximum(y1[current], y1[rest])
+        xx2 = np.minimum(x2[current], x2[rest])
+        yy2 = np.minimum(y2[current], y2[rest])
+        inter = np.maximum(0.0, xx2 - xx1) * np.maximum(0.0, yy2 - yy1)
+        union = areas[current] + areas[rest] - inter
+        iou = np.divide(inter, union, out=np.zeros_like(inter), where=union > 0)
+        order = rest[iou <= nms_threshold]
+    return keep
 
 
 def _nms(boxes: List[List[int]], confidences: List[float], score_threshold: float, nms_threshold: float) -> List[int]:

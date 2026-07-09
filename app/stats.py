@@ -14,6 +14,7 @@ Line = Tuple[Point, Point]
 
 TIMING_KEYS = (
     "capture_ms",
+    "queue_wait_ms",
     "preprocess_ms",
     "inference_ms",
     "postprocess_ms",

@@ -34,6 +34,10 @@ def main() -> int:
     detector = PersonDetector(config.get("detector") or config.get("detection", {}), fallback_config=config.get("detection", {}))
     tracker = PersonTracker(config["tracking"])
     privacy_config = config["privacy"]
+    stream_config = config.get("stream", {})
+    jpeg_quality = max(35, min(95, int(stream_config.get("jpeg_quality") or 80)))
+    stream_width = max(0, int(stream_config.get("width") or 0))
+    stream_height = max(0, int(stream_config.get("height") or 0))
     if detector.name in {"no-op-person-detector", "motion-person-detector"}:
         print(f"detector: {detector.name}")
         print(f"npu_enabled: {str(detector.npu_enabled).lower()}")
@@ -78,7 +82,8 @@ def main() -> int:
             draw_ms = _ms(time.monotonic() - draw_started)
 
             encode_started = time.monotonic()
-            ok, _ = cv2.imencode(".jpg", display, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+            stream_frame = _resize_for_stream(display, stream_width, stream_height)
+            ok, _ = cv2.imencode(".jpg", stream_frame, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
             encode_ms = _ms(time.monotonic() - encode_started)
             if not ok:
                 raise RuntimeError("Could not encode JPEG frame")
@@ -86,6 +91,7 @@ def main() -> int:
             total_latency_ms = _ms(time.monotonic() - packet.captured_at)
             values = {
                 "capture_ms": capture_ms,
+                "queue_wait_ms": 0.0,
                 "preprocess_ms": detector_profile.get("preprocess_ms", 0.0),
                 "inference_ms": detector_profile.get("inference_ms", 0.0),
                 "postprocess_ms": detector_profile.get("postprocess_ms", 0.0),
@@ -117,6 +123,7 @@ def main() -> int:
     print(f"max_latency_ms: {max(latencies):.1f}")
     for key in (
         "capture_ms",
+        "queue_wait_ms",
         "preprocess_ms",
         "inference_ms",
         "postprocess_ms",
@@ -152,6 +159,15 @@ def _draw_tracks(frame, tracks) -> None:
         cv2.rectangle(frame, (x1, y1), (x2, y2), (42, 166, 85), 2)
         label = f"ID {track.track_id} {track.confidence:.2f}"
         cv2.putText(frame, label, (x1, max(24, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (42, 166, 85), 2)
+
+
+def _resize_for_stream(frame, width: int, height: int):
+    if width <= 0 or height <= 0:
+        return frame
+    current_height, current_width = frame.shape[:2]
+    if current_width == width and current_height == height:
+        return frame
+    return cv2.resize(frame, (width, height), interpolation=cv2.INTER_NEAREST)
 
 
 def _ms(seconds: float) -> float:

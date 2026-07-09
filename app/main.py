@@ -61,8 +61,12 @@ class TrackingRuntime:
         self.stats = StatsManager(self.config["counting"])
         self.privacy_config = self.config["privacy"]
         self.performance_config = self.config.get("performance", {})
+        self.stream_config = self.config.get("stream", {})
         self.target_fps = float(self.performance_config.get("target_fps") or 30)
         self.detect_every_n_frames = max(1, int(self.performance_config.get("detect_every_n_frames") or 1))
+        self.jpeg_quality = max(35, min(95, int(self.stream_config.get("jpeg_quality") or 80)))
+        self.stream_width = max(0, int(self.stream_config.get("width") or 0))
+        self.stream_height = max(0, int(self.stream_config.get("height") or 0))
         self._lock = threading.RLock()
         self._stop_event = threading.Event()
         self._camera_thread: Optional[threading.Thread] = None
@@ -167,12 +171,13 @@ class TrackingRuntime:
                 continue
             last_processed_frame_id = frame_id
             try:
-                self._process_frame(frame_packet, capture_ms)
+                queue_wait_ms = max(0.0, _ms(time.monotonic() - frame_packet.captured_at) - capture_ms)
+                self._process_frame(frame_packet, capture_ms, queue_wait_ms)
             except Exception as exc:
                 self._publish_error(str(exc))
                 time.sleep(0.05)
 
-    def _process_frame(self, frame_packet: CameraFrame, capture_ms: float) -> None:
+    def _process_frame(self, frame_packet: CameraFrame, capture_ms: float, queue_wait_ms: float) -> None:
         frame = frame_packet.frame
         detect_this_frame = (self._frame_index % self.detect_every_n_frames) == 0 or not self._last_detections
 
@@ -199,7 +204,8 @@ class TrackingRuntime:
         draw_ms = _ms(time.monotonic() - draw_started)
 
         encode_started = time.monotonic()
-        ok, encoded = cv2.imencode(".jpg", display, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+        stream_frame = self._prepare_stream_frame(display)
+        ok, encoded = cv2.imencode(".jpg", stream_frame, [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality])
         encode_ms = _ms(time.monotonic() - encode_started)
         if not ok:
             raise RuntimeError("Could not encode JPEG frame")
@@ -212,6 +218,7 @@ class TrackingRuntime:
         total_latency_ms = _ms(time.monotonic() - frame_packet.captured_at)
         timings = {
             "capture_ms": capture_ms,
+            "queue_wait_ms": queue_wait_ms,
             "preprocess_ms": detector_profile.get("preprocess_ms", 0.0),
             "inference_ms": detector_profile.get("inference_ms", 0.0),
             "postprocess_ms": detector_profile.get("postprocess_ms", 0.0),
@@ -229,6 +236,14 @@ class TrackingRuntime:
             running=True,
             last_error=self.detector.warning,
         )
+
+    def _prepare_stream_frame(self, frame: np.ndarray) -> np.ndarray:
+        if self.stream_width <= 0 or self.stream_height <= 0:
+            return frame
+        height, width = frame.shape[:2]
+        if width == self.stream_width and height == self.stream_height:
+            return frame
+        return cv2.resize(frame, (self.stream_width, self.stream_height), interpolation=cv2.INTER_NEAREST)
 
     def _prepare_display_frame(
         self,
@@ -327,7 +342,7 @@ async def lifespan(_: FastAPI):
         runtime.stop()
 
 
-app = FastAPI(title="RK3588 Personnel Tracking", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="RK3588 Personnel Tracking", version="0.3.1", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC_ROOT)), name="static")
 
 

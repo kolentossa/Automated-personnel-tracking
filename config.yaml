@@ -40,6 +40,11 @@ performance:
   queue_size: 1
   detect_every_n_frames: 1
 
+stream:
+  jpeg_quality: 80
+  width: 960
+  height: 540
+
 tracking:
   iou_threshold: 0.3
   max_missing: 20
