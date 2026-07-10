@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 import cv2
@@ -14,7 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.privacy import RetinaFaceONNXDetector, apply_privacy_mosaic  # noqa: E402
+from app.privacy import FaceMosaicProcessor, RetinaFaceONNXDetector, apply_privacy_mosaic  # noqa: E402
 
 
 def main() -> int:
@@ -62,12 +63,43 @@ def main() -> int:
             print(f"error: could not write output: {args.output}", file=sys.stderr)
             return 5
 
+    processor = FaceMosaicProcessor(
+        {
+            "face_mosaic_enabled": True,
+            "face_detector": "retinaface-onnx",
+            "face_model_path": str(args.model),
+            "face_detect_every_n_frames": 1,
+            "head_fallback_enabled": True,
+        }
+    )
+    processor.start()
+    async_result = frame.copy()
+    try:
+        for _ in range(50):
+            async_result = processor.process(frame, [(0, 0, frame.shape[1], frame.shape[0])])
+            if processor.snapshot()["faces_detected"] > 0:
+                async_result = processor.process(frame, [(0, 0, frame.shape[1], frame.shape[0])])
+                break
+            time.sleep(0.02)
+    finally:
+        processor.stop()
+    async_status = processor.snapshot()
+    if (
+        async_status["faces_detected"] == 0
+        or async_status["face_privacy_mode"] != "face-detected"
+        or not np.any(frame != async_result)
+    ):
+        print(f"error: asynchronous face processor did not mosaic a detected face: {async_status}", file=sys.stderr)
+        return 6
+
     print(f"face_detector: retinaface-mobile320-onnx")
     print(f"faces_detected: {len(face_boxes)}")
     print(f"face_boxes: {face_boxes}")
     print(f"face_detection_ms: {detector.last_inference_ms:.1f}")
     print(f"mosaic_changed_pixels: {changed_inside}")
     print("fixed_head_fallback_used: false")
+    print(f"async_face_privacy_mode: {async_status['face_privacy_mode']}")
+    print(f"async_faces_detected: {async_status['faces_detected']}")
     print("status: ok")
     return 0
 

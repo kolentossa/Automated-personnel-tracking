@@ -38,12 +38,14 @@ performance:
   target_latency_ms: 30
   latest_frame_only: true
   queue_size: 1
-  detect_every_n_frames: 1
+  detect_every_n_frames: 3
+  cpu_affinity: "4-7"
+  timing_window_frames: 30
 
 stream:
-  jpeg_quality: 80
-  width: 960
-  height: 540
+  jpeg_quality: 74
+  width: 800
+  height: 450
 
 tracking:
   iou_threshold: 0.3
@@ -61,5 +63,14 @@ counting:
   cooldown_frames: 20
 privacy:
   face_mosaic_enabled: true
+  face_detector: retinaface-onnx
+  face_model_path: models/RetinaFace_mobile320.onnx
+  face_input_size: 320
+  face_confidence_threshold: 0.6
+  face_nms_threshold: 0.4
+  face_detector_threads: 1
+  face_detect_every_n_frames: 10
+  face_result_max_age_ms: 1000
+  face_mosaic_padding: 0.15
   head_fallback_enabled: true
   mosaic_strength: 14

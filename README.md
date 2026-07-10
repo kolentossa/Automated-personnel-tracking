@@ -256,11 +256,17 @@ privacy:
   face_model_path: models/RetinaFace_mobile320.onnx
   face_input_size: 320
   face_confidence_threshold: 0.6
-  face_detector_threads: 2
-  face_detect_every_n_frames: 5
+  face_detector_threads: 1
+  face_detect_every_n_frames: 10
   face_result_max_age_ms: 1000
   head_fallback_enabled: true
 ```
+
+The optimized RK3588 profile uses `performance.detect_every_n_frames: 3`,
+pins the process to big CPU cores `4-7`, reports a 30-frame rolling latency,
+and streams 800x450 JPEG frames at quality 74. Person inference runs at about
+10 Hz while tracking, privacy mosaic, video encoding, and Web streaming remain
+at the camera frame rate.
 
 `camera.source_type` can later be changed to `video`, using `camera.video_file`,
 to reuse the same detection/tracking/counting pipeline with a prerecorded file.

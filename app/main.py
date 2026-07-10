@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -54,6 +55,10 @@ def _wrap_text(value: str, size: int) -> list[str]:
 class TrackingRuntime:
     def __init__(self) -> None:
         self.config = load_config()
+        self.performance_config = self.config.get("performance", {})
+        self.cpu_affinity, self.cpu_affinity_error = _apply_cpu_affinity(
+            self.performance_config.get("cpu_affinity")
+        )
         self.camera = CameraSource(self.config["camera"])
         detector_config = self.config.get("detector") or self.config.get("detection", {})
         self.detector = PersonDetector(detector_config, fallback_config=self.config.get("detection", {}))
@@ -61,10 +66,10 @@ class TrackingRuntime:
         counting_config = dict(self.config["counting"])
         counting_config["_default_frame_width"] = int(self.config["camera"].get("width") or 960)
         counting_config["_default_frame_height"] = int(self.config["camera"].get("height") or 540)
+        counting_config["_timing_window_frames"] = int(self.performance_config.get("timing_window_frames") or 30)
         self.stats = StatsManager(counting_config)
         self.privacy_config = self.config["privacy"]
         self.privacy = FaceMosaicProcessor(self.privacy_config)
-        self.performance_config = self.config.get("performance", {})
         self.stream_config = self.config.get("stream", {})
         self.target_fps = float(self.performance_config.get("target_fps") or 30)
         self.detect_every_n_frames = max(1, int(self.performance_config.get("detect_every_n_frames") or 1))
@@ -72,6 +77,7 @@ class TrackingRuntime:
         self.stream_width = max(0, int(self.stream_config.get("width") or 0))
         self.stream_height = max(0, int(self.stream_config.get("height") or 0))
         self._lock = threading.RLock()
+        self._frame_ready = threading.Condition(self._lock)
         self._stop_event = threading.Event()
         self._camera_thread: Optional[threading.Thread] = None
         self._processing_thread: Optional[threading.Thread] = None
@@ -80,6 +86,7 @@ class TrackingRuntime:
         self._latest_camera_frame_id = 0
         self._last_capture_ms = 0.0
         self._last_detections: list[Detection] = []
+        self._detector_has_run = False
         self._frame_index = 0
         self._fps = 0.0
         self._fps_count = 0
@@ -106,6 +113,8 @@ class TrackingRuntime:
 
     def stop(self) -> None:
         self._stop_event.set()
+        with self._frame_ready:
+            self._frame_ready.notify_all()
         for thread in (self._camera_thread, self._processing_thread):
             if thread and thread.is_alive():
                 thread.join(timeout=5.0)
@@ -172,11 +181,15 @@ class TrackingRuntime:
         for key in TIMING_KEYS:
             data[key] = stats.get(key, 0.0)
         data.update(self.privacy.snapshot())
+        data["cpu_affinity"] = self.cpu_affinity
+        data["cpu_affinity_error"] = self.cpu_affinity_error
         return data
 
     def stats_snapshot(self) -> dict:
         data = self.stats.snapshot()
         data.update(self.privacy.snapshot())
+        data["cpu_affinity"] = self.cpu_affinity
+        data["cpu_affinity_error"] = self.cpu_affinity_error
         return data
 
     def stream_interval(self) -> float:
@@ -191,25 +204,26 @@ class TrackingRuntime:
                 self._publish_error(self.camera.error or "Waiting for a readable camera frame")
                 time.sleep(0.2)
                 continue
-            with self._lock:
+            with self._frame_ready:
                 self._latest_camera_frame = frame_packet
                 self._latest_camera_frame_id += 1
                 self._last_capture_ms = round(capture_ms, 1)
-            time.sleep(0.001)
+                self._frame_ready.notify()
 
     def _processing_loop(self) -> None:
         last_processed_frame_id = 0
         while not self._stop_event.is_set():
-            with self._lock:
+            with self._frame_ready:
+                if self._latest_camera_frame_id == last_processed_frame_id:
+                    self._frame_ready.wait(timeout=0.1)
                 frame_packet = self._latest_camera_frame
                 frame_id = self._latest_camera_frame_id
                 capture_ms = self._last_capture_ms
             if frame_packet is None or frame_id == last_processed_frame_id:
-                time.sleep(0.003)
                 continue
             last_processed_frame_id = frame_id
             try:
-                queue_wait_ms = max(0.0, _ms(time.monotonic() - frame_packet.captured_at) - capture_ms)
+                queue_wait_ms = max(0.0, _ms(time.monotonic() - frame_packet.captured_at))
                 self._process_frame(frame_packet, capture_ms, queue_wait_ms)
             except Exception as exc:
                 self._publish_error(str(exc))
@@ -217,12 +231,13 @@ class TrackingRuntime:
 
     def _process_frame(self, frame_packet: CameraFrame, capture_ms: float, queue_wait_ms: float) -> None:
         frame = frame_packet.frame
-        detect_this_frame = (self._frame_index % self.detect_every_n_frames) == 0 or not self._last_detections
+        detect_this_frame = (self._frame_index % self.detect_every_n_frames) == 0 or not self._detector_has_run
 
         if detect_this_frame:
             detections = self.detector.detect(frame)
             detector_profile = dict(self.detector.last_profile)
             self._last_detections = detections
+            self._detector_has_run = True
         else:
             detections = list(self._last_detections)
             detector_profile = {"preprocess_ms": 0.0, "inference_ms": 0.0, "postprocess_ms": 0.0}
@@ -360,6 +375,31 @@ def _blank_timings() -> dict:
 
 def _ms(seconds: float) -> float:
     return round(float(seconds) * 1000.0, 1)
+
+
+def _apply_cpu_affinity(value) -> tuple[list[int], str]:
+    if not hasattr(os, "sched_setaffinity"):
+        return [], "CPU affinity is not supported on this platform"
+    try:
+        requested: set[int] = set()
+        parts = value if isinstance(value, (list, tuple)) else str(value or "").split(",")
+        for part in parts:
+            text = str(part).strip()
+            if not text:
+                continue
+            if "-" in text:
+                start, end = (int(item.strip()) for item in text.split("-", 1))
+                requested.update(range(min(start, end), max(start, end) + 1))
+            else:
+                requested.add(int(text))
+        available = set(os.sched_getaffinity(0))
+        selected = requested & available if requested else available
+        if not selected:
+            raise ValueError(f"No requested CPUs are available: {sorted(requested)}")
+        os.sched_setaffinity(0, selected)
+        return sorted(os.sched_getaffinity(0)), ""
+    except Exception as exc:
+        return [], str(exc)
 
 
 runtime = TrackingRuntime()

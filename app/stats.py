@@ -66,6 +66,10 @@ class StatsManager:
         self.face_mosaic_enabled = True
         self.available_cameras = []
         self.timings: Dict[str, float] = {key: 0.0 for key in TIMING_KEYS}
+        timing_window = max(1, int(config.get("_timing_window_frames") or 30))
+        self._timing_samples: Dict[str, Deque[float]] = {
+            key: deque(maxlen=timing_window) for key in TIMING_KEYS
+        }
 
     def update_tracks(self, tracks: Iterable[TrackedPerson], frame_shape: Sequence[int]) -> None:
         track_list = list(tracks)
@@ -125,7 +129,9 @@ class StatsManager:
             self.available_cameras = available_cameras
             if timings is not None:
                 for key in TIMING_KEYS:
-                    self.timings[key] = round(float(timings.get(key, 0.0) or 0.0), 1)
+                    self._timing_samples[key].append(float(timings.get(key, 0.0) or 0.0))
+                    samples = self._timing_samples[key]
+                    self.timings[key] = round(sum(samples) / len(samples), 1)
                 self.latency_ms = self.timings["total_latency_ms"] or self.latency_ms
 
     def reset(self) -> None:

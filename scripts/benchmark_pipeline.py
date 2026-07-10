@@ -27,6 +27,7 @@ from app.tracker import PersonTracker  # noqa: E402
 def main() -> int:
     parser = argparse.ArgumentParser(description="Benchmark RK3588 person-tracking pipeline latency.")
     parser.add_argument("--frames", type=int, default=300, help="Number of processed frames to benchmark.")
+    parser.add_argument("--warmup-frames", type=int, default=30, help="Warmup frames excluded from metrics.")
     args = parser.parse_args()
 
     config = load_config()
@@ -38,6 +39,7 @@ def main() -> int:
     jpeg_quality = max(35, min(95, int(stream_config.get("jpeg_quality") or 80)))
     stream_width = max(0, int(stream_config.get("width") or 0))
     stream_height = max(0, int(stream_config.get("height") or 0))
+    detect_every_n_frames = max(1, int(config.get("performance", {}).get("detect_every_n_frames") or 1))
     if detector.name in {"no-op-person-detector", "motion-person-detector"}:
         print(f"detector: {detector.name}")
         print(f"npu_enabled: {str(detector.npu_enabled).lower()}")
@@ -53,7 +55,10 @@ def main() -> int:
 
     timings: Dict[str, List[float]] = {key: [] for key in TIMING_KEYS}
     processed = 0
-    started = time.monotonic()
+    frame_index = 0
+    detector_has_run = False
+    last_detections = []
+    started = 0.0
 
     privacy.start()
     try:
@@ -66,8 +71,18 @@ def main() -> int:
                 time.sleep(0.2)
                 continue
 
-            detections = detector.detect(packet.frame)
-            detector_profile = dict(detector.last_profile)
+            if frame_index == max(0, args.warmup_frames):
+                started = time.monotonic()
+
+            detect_this_frame = frame_index % detect_every_n_frames == 0 or not detector_has_run
+            if detect_this_frame:
+                detections = detector.detect(packet.frame)
+                detector_profile = dict(detector.last_profile)
+                last_detections = detections
+                detector_has_run = True
+            else:
+                detections = list(last_detections)
+                detector_profile = {"preprocess_ms": 0.0, "inference_ms": 0.0, "postprocess_ms": 0.0}
 
             tracking_started = time.monotonic()
             tracks = tracker.update(detections)
@@ -104,20 +119,23 @@ def main() -> int:
                 "encode_ms": encode_ms,
                 "total_latency_ms": total_latency_ms,
             }
-            for key, value in values.items():
-                timings[key].append(float(value))
-            processed += 1
+            if frame_index >= max(0, args.warmup_frames):
+                for key, value in values.items():
+                    timings[key].append(float(value))
+                processed += 1
+            frame_index += 1
     finally:
         privacy.stop()
         camera.release()
 
-    elapsed = time.monotonic() - started
+    elapsed = time.monotonic() - started if started else 0.0
     fps = processed / max(0.001, elapsed)
     latencies = timings["total_latency_ms"]
     if not latencies:
         print("error: no frames processed", file=sys.stderr)
         return 3
     print(f"frames: {processed}")
+    print(f"warmup_frames: {max(0, args.warmup_frames)}")
     print(f"detector: {detector.name}")
     print(f"npu_enabled: {str(detector.npu_enabled).lower()}")
     privacy_status = privacy.snapshot()

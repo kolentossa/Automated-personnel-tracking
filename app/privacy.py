@@ -154,7 +154,7 @@ class FaceMosaicProcessor:
             return frame.copy()
 
         self._frame_index += 1
-        if self.detector_available and (self._frame_index - 1) % self.detect_every_n_frames == 0:
+        if people and self.detector_available and (self._frame_index - 1) % self.detect_every_n_frames == 0:
             with self._lock:
                 self._pending_frame = frame.copy()
             self._wake_event.set()

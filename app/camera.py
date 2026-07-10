@@ -55,19 +55,18 @@ class CameraSource:
             if not self.open():
                 return None
         assert self._capture is not None
-        captured_at = time.monotonic()
         ok, frame = self._capture.read()
         if ok and frame is not None:
             self.status = "online"
             self.error = ""
-            return CameraFrame(frame=frame, captured_at=captured_at, source=self.selected_source)
+            return CameraFrame(frame=frame, captured_at=time.monotonic(), source=self.selected_source)
         if self.source_type == "video" and self._capture is not None:
             self._capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
             ok, frame = self._capture.read()
             if ok and frame is not None:
                 self.status = "online"
                 self.error = ""
-                return CameraFrame(frame=frame, captured_at=captured_at, source=self.selected_source)
+                return CameraFrame(frame=frame, captured_at=time.monotonic(), source=self.selected_source)
         self.status = "error"
         self.error = f"Could not read a frame from {self.selected_source or self.camera_device}"
         self.release()
