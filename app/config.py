@@ -61,7 +61,20 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "direction": {"mode": "left_to_right"},
         "cooldown_frames": 20,
     },
-    "privacy": {"face_mosaic_enabled": True, "head_fallback_enabled": True, "mosaic_strength": 14},
+    "privacy": {
+        "face_mosaic_enabled": True,
+        "face_detector": "retinaface-onnx",
+        "face_model_path": "models/RetinaFace_mobile320.onnx",
+        "face_input_size": 320,
+        "face_confidence_threshold": 0.6,
+        "face_nms_threshold": 0.4,
+        "face_detector_threads": 2,
+        "face_detect_every_n_frames": 5,
+        "face_result_max_age_ms": 1000,
+        "face_mosaic_padding": 0.15,
+        "head_fallback_enabled": True,
+        "mosaic_strength": 14,
+    },
 }
 
 

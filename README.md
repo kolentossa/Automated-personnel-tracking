@@ -59,6 +59,13 @@ Expected path:
 /home/cat/projects/person-tracking/.venv/bin/python
 ```
 
+Download the Rockchip model-zoo RetinaFace model into the ignored `models/`
+directory. The downloader verifies the pinned SHA-256 before installing it:
+
+```bash
+.venv/bin/python scripts/download_face_model.py
+```
+
 ## Running The Demo
 
 ```bash
@@ -245,6 +252,14 @@ detection:
 
 privacy:
   face_mosaic_enabled: true
+  face_detector: retinaface-onnx
+  face_model_path: models/RetinaFace_mobile320.onnx
+  face_input_size: 320
+  face_confidence_threshold: 0.6
+  face_detector_threads: 2
+  face_detect_every_n_frames: 5
+  face_result_max_age_ms: 1000
+  head_fallback_enabled: true
 ```
 
 `camera.source_type` can later be changed to `video`, using `camera.video_file`,
@@ -267,8 +282,24 @@ Privacy behavior:
 - Mosaic anonymisation is applied before JPEG frames are sent to the browser.
 - Face recognition, identity recognition, ReID, embeddings, and face databases
   are not used.
-- If a Haar cascade is unavailable or no face is found, the top portion of each
-  person box is mosaiced as a head fallback.
+- `RetinaFace_mobile320.onnx` performs real face detection asynchronously so
+  face inference cannot queue video frames or add directly to stream latency.
+- `/api/health` and `/api/stats` expose `face_detector`,
+  `face_detector_available`, `faces_detected`, `face_detection_ms`, and
+  `face_privacy_mode` for runtime verification.
+- A person whose face is not detected still receives a conservative head-box
+  mosaic when `head_fallback_enabled` is true.
+
+Verify the detector against a known face image with:
+
+```bash
+.venv/bin/python scripts/test_face_privacy.py --image data/retinaface_test.jpg
+```
+
+The test fails unless RetinaFace returns at least one face box and all changed
+pixels are confined to those detected boxes. The test image is intentionally
+ignored by Git.
+
 ### RK3588 IMX415 camera capture note
 
 On this LubanCat-5 V2 board the IMX415 sensor is enabled and `v4l2-ctl` can

@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from app.camera import CameraFrame, CameraSource
 from app.config import load_config, save_counting_config
 from app.detector import PersonDetector
-from app.privacy import apply_privacy_mosaic
+from app.privacy import FaceMosaicProcessor
 from app.stats import Line, StatsManager, TIMING_KEYS
 from app.tracker import PersonTracker
 from vision.types import Detection, TrackedPerson
@@ -63,6 +63,7 @@ class TrackingRuntime:
         counting_config["_default_frame_height"] = int(self.config["camera"].get("height") or 540)
         self.stats = StatsManager(counting_config)
         self.privacy_config = self.config["privacy"]
+        self.privacy = FaceMosaicProcessor(self.privacy_config)
         self.performance_config = self.config.get("performance", {})
         self.stream_config = self.config.get("stream", {})
         self.target_fps = float(self.performance_config.get("target_fps") or 30)
@@ -97,6 +98,7 @@ class TrackingRuntime:
             if self._camera_thread and self._camera_thread.is_alive():
                 return
             self._stop_event.clear()
+            self.privacy.start()
             self._camera_thread = threading.Thread(target=self._camera_loop, name="rk3588-camera-capture", daemon=True)
             self._processing_thread = threading.Thread(target=self._processing_loop, name="rk3588-camera-processing", daemon=True)
             self._camera_thread.start()
@@ -107,6 +109,7 @@ class TrackingRuntime:
         for thread in (self._camera_thread, self._processing_thread):
             if thread and thread.is_alive():
                 thread.join(timeout=5.0)
+        self.privacy.stop()
         self.camera.release()
         self._update_runtime(
             fps=self._fps,
@@ -145,8 +148,15 @@ class TrackingRuntime:
         return result
 
     def health(self) -> dict:
-        stats = self.stats.snapshot()
-        ok = bool(stats.get("running")) and stats.get("camera_status") == "online" and not stats.get("last_error")
+        stats = self.stats_snapshot()
+        privacy_required = bool(self.privacy_config.get("face_mosaic_enabled", True))
+        privacy_ok = not privacy_required or bool(stats.get("face_detector_available"))
+        ok = (
+            bool(stats.get("running"))
+            and stats.get("camera_status") == "online"
+            and not stats.get("last_error")
+            and privacy_ok
+        )
         data = {
             "status": "ok" if ok else "error",
             "running": stats.get("running", False),
@@ -161,6 +171,12 @@ class TrackingRuntime:
         }
         for key in TIMING_KEYS:
             data[key] = stats.get(key, 0.0)
+        data.update(self.privacy.snapshot())
+        return data
+
+    def stats_snapshot(self) -> dict:
+        data = self.stats.snapshot()
+        data.update(self.privacy.snapshot())
         return data
 
     def stream_interval(self) -> float:
@@ -276,13 +292,7 @@ class TrackingRuntime:
         track_boxes = [track.bbox for track in tracks]
         detection_boxes = [detection.bbox for detection in detections]
         person_boxes = track_boxes or detection_boxes
-        return apply_privacy_mosaic(
-            frame,
-            person_boxes=person_boxes,
-            face_mosaic_enabled=bool(self.privacy_config.get("face_mosaic_enabled", True)),
-            head_fallback_enabled=bool(self.privacy_config.get("head_fallback_enabled", True)),
-            mosaic_strength=int(self.privacy_config.get("mosaic_strength") or 14),
-        )
+        return self.privacy.process(frame, person_boxes)
 
     def _draw_overlay(self, frame: np.ndarray, tracks: Iterable[TrackedPerson], line: Optional[Line]) -> None:
         if line is not None:
@@ -380,7 +390,7 @@ def video():
 
 @app.get("/api/stats")
 def api_stats():
-    return JSONResponse(runtime.stats.snapshot())
+    return JSONResponse(runtime.stats_snapshot())
 
 
 @app.get("/api/health")

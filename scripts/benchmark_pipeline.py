@@ -19,7 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from app.camera import CameraSource  # noqa: E402
 from app.config import load_config  # noqa: E402
 from app.detector import PersonDetector  # noqa: E402
-from app.privacy import apply_privacy_mosaic  # noqa: E402
+from app.privacy import FaceMosaicProcessor  # noqa: E402
 from app.stats import TIMING_KEYS  # noqa: E402
 from app.tracker import PersonTracker  # noqa: E402
 
@@ -33,7 +33,7 @@ def main() -> int:
     camera = CameraSource(config["camera"])
     detector = PersonDetector(config.get("detector") or config.get("detection", {}), fallback_config=config.get("detection", {}))
     tracker = PersonTracker(config["tracking"])
-    privacy_config = config["privacy"]
+    privacy = FaceMosaicProcessor(config["privacy"])
     stream_config = config.get("stream", {})
     jpeg_quality = max(35, min(95, int(stream_config.get("jpeg_quality") or 80)))
     stream_width = max(0, int(stream_config.get("width") or 0))
@@ -45,11 +45,17 @@ def main() -> int:
             print(f"warning: {detector.warning}")
         print("error: refusing to benchmark placeholder detector", file=sys.stderr)
         return 2
+    privacy_status = privacy.snapshot()
+    if config["privacy"].get("face_mosaic_enabled", True) and not privacy_status["face_detector_available"]:
+        print(f"face_detector: {privacy_status['face_detector']}")
+        print(f"error: {privacy_status['face_detector_error']}", file=sys.stderr)
+        return 4
 
     timings: Dict[str, List[float]] = {key: [] for key in TIMING_KEYS}
     processed = 0
     started = time.monotonic()
 
+    privacy.start()
     try:
         while processed < args.frames:
             capture_started = time.monotonic()
@@ -68,12 +74,9 @@ def main() -> int:
             tracking_ms = _ms(time.monotonic() - tracking_started)
 
             privacy_started = time.monotonic()
-            display = apply_privacy_mosaic(
+            display = privacy.process(
                 packet.frame,
-                person_boxes=[track.bbox for track in tracks] or [detection.bbox for detection in detections],
-                face_mosaic_enabled=bool(privacy_config.get("face_mosaic_enabled", True)),
-                head_fallback_enabled=bool(privacy_config.get("head_fallback_enabled", True)),
-                mosaic_strength=int(privacy_config.get("mosaic_strength") or 14),
+                [track.bbox for track in tracks] or [detection.bbox for detection in detections],
             )
             privacy_ms = _ms(time.monotonic() - privacy_started)
 
@@ -105,6 +108,7 @@ def main() -> int:
                 timings[key].append(float(value))
             processed += 1
     finally:
+        privacy.stop()
         camera.release()
 
     elapsed = time.monotonic() - started
@@ -116,6 +120,10 @@ def main() -> int:
     print(f"frames: {processed}")
     print(f"detector: {detector.name}")
     print(f"npu_enabled: {str(detector.npu_enabled).lower()}")
+    privacy_status = privacy.snapshot()
+    print(f"face_detector: {privacy_status['face_detector']}")
+    print(f"face_detector_available: {str(privacy_status['face_detector_available']).lower()}")
+    print(f"face_detection_ms: {privacy_status['face_detection_ms']:.1f}")
     print(f"average_fps: {fps:.2f}")
     print(f"p50_latency_ms: {_percentile(latencies, 50):.1f}")
     print(f"p95_latency_ms: {_percentile(latencies, 95):.1f}")

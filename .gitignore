@@ -13,6 +13,8 @@ models/*.rknn
 models/*.pt
 models/*.pth
 data/*.avi
+data/retinaface_test.jpg
+data/privacy_test*.jpg
 logs/*.jsonl
 models/*.engine
 models/*.weights
