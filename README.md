@@ -4,6 +4,34 @@ A local-first personnel tracking demo for the RK3588 LubanCat-5 v2. The system r
 
 The first demo does not require a USB camera. It generates a synthetic `data/sample.mp4` and runs the same camera, detection, tracking, counting, backend, and frontend flow that future camera sources will use.
 
+## Current Production Deployment
+
+The optimized camera service is deployed on the RK3588 at:
+
+```text
+http://192.168.1.213:8001
+```
+
+It reads `/dev/video11`, uses YOLOv8n RKNN on the NPU, tracks anonymous person
+IDs, performs line-crossing counts, and applies RetinaFace plus optical-flow
+face mosaic before Web streaming. The legacy service on port `8000` has been
+retired and should remain stopped.
+
+Current measured operating point:
+
+```text
+camera: /dev/video11
+fps: approximately 30
+rolling application latency: approximately 12-16 ms
+detector: rknn-yolov8n
+npu_enabled: true
+face_detector: retinaface-mobile320-onnx
+```
+
+The service currently runs as a project-local background process. No systemd
+unit or boot-time service has been installed, so it must be started again after
+the board reboots.
+
 ## Architecture
 
 ```text
@@ -66,14 +94,16 @@ directory. The downloader verifies the pinned SHA-256 before installing it:
 .venv/bin/python scripts/download_face_model.py
 ```
 
-## Running The Demo
+## Legacy Synthetic Demo
 
 ```bash
 cd ~/projects/person-tracking
 ./scripts/run_demo.sh
 ```
 
-The script generates `data/sample.mp4`, starts the backend on `0.0.0.0:8000`, and launches the processing pipeline.
+This older demo generates `data/sample.mp4` and starts the legacy backend on
+`0.0.0.0:8000`. It is retained for offline development and is not the current
+RK3588 camera deployment.
 
 Open locally or from the LAN:
 
@@ -201,7 +231,7 @@ Run it from the project root:
 ```bash
 cd ~/projects/person-tracking
 source .venv/bin/activate
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+uvicorn app.main:app --host 0.0.0.0 --port 8001
 ```
 
 Or use the helper script:
@@ -211,11 +241,18 @@ cd ~/projects/person-tracking
 ./scripts/run_dev.sh
 ```
 
+For the current project-local background deployment:
+
+```bash
+mkdir -p logs
+nohup ./scripts/run_dev.sh > logs/uvicorn-8001-production.log 2>&1 &
+```
+
 Open the dashboard from another LAN device by replacing the address with the
 board IP:
 
 ```text
-http://RK3588_IP:8000
+http://RK3588_IP:8001
 ```
 
 Implemented routes:
@@ -348,7 +385,7 @@ without editing code or logging in with SSH.
 Open the Web UI:
 
 ```text
-http://RK3588_IP:8000
+http://RK3588_IP:8001
 ```
 
 Use the `Counting Configuration` panel:
@@ -379,9 +416,9 @@ counting:
 API examples:
 
 ```bash
-curl http://127.0.0.1:8000/api/config/counting
+curl http://127.0.0.1:8001/api/config/counting
 
-curl -X POST http://127.0.0.1:8000/api/config/counting \
+curl -X POST http://127.0.0.1:8001/api/config/counting \
   -H 'Content-Type: application/json' \
   -d '{"line":{"x1":640,"y1":0,"x2":640,"y2":720},"direction":"left_to_right"}'
 ```
@@ -454,19 +491,19 @@ Run the Web service on the RK3588:
 ```bash
 cd ~/projects/person-tracking
 source .venv/bin/activate
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+uvicorn app.main:app --host 0.0.0.0 --port 8001
 ```
 
 Then open:
 
 ```text
-http://RK3588_IP:8000
+http://RK3588_IP:8001
 ```
 
 Check NPU status and latency:
 
 ```bash
-curl http://127.0.0.1:8000/api/health
+curl http://127.0.0.1:8001/api/health
 python scripts/benchmark_pipeline.py --frames 300
 python scripts/benchmark_pipeline.py --video data/privacy_motion_test.mp4 --frames 300
 ```
@@ -475,9 +512,12 @@ Expected optimized health fields after `models/yolov8n.rknn` is present:
 
 ```json
 {
+  "source": "/dev/video11",
   "detector": "rknn-yolov8n",
   "npu_enabled": true,
-  "inference_ms": 30.0,
-  "total_latency_ms": 40.0
+  "face_detector_available": true,
+  "fps": 30.0,
+  "inference_ms": 8.0,
+  "total_latency_ms": 14.0
 }
 ```

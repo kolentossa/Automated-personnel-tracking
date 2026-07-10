@@ -11,4 +11,8 @@ fi
 . .venv/bin/activate
 python -m pip install -r requirements.txt
 
-exec uvicorn app.main:app --host 0.0.0.0 --port 8000
+HOST="${HOST:-0.0.0.0}"
+PORT="${PORT:-8001}"
+
+echo "RK3588 tracking UI: http://127.0.0.1:${PORT}"
+exec uvicorn app.main:app --host "$HOST" --port "$PORT"
