@@ -257,8 +257,14 @@ privacy:
   face_input_size: 320
   face_confidence_threshold: 0.6
   face_detector_threads: 1
-  face_detect_every_n_frames: 10
+  face_detect_every_n_frames: 5
   face_result_max_age_ms: 1000
+  face_mosaic_padding: 0.25
+  face_tracking_enabled: true
+  face_tracking_min_points: 4
+  face_tracking_win_size: 31
+  face_tracking_max_level: 3
+  face_tracking_max_motion_px: 96
   head_fallback_enabled: true
 ```
 
@@ -290,9 +296,13 @@ Privacy behavior:
   are not used.
 - `RetinaFace_mobile320.onnx` performs real face detection asynchronously so
   face inference cannot queue video frames or add directly to stream latency.
+- Sparse Lucas-Kanade optical flow propagates each detected face box on every
+  video frame. RetinaFace refreshes the boxes every five frames to correct
+  drift, and invalid optical-flow tracks immediately fall back to head mosaic.
 - `/api/health` and `/api/stats` expose `face_detector`,
-  `face_detector_available`, `faces_detected`, `face_detection_ms`, and
-  `face_privacy_mode` for runtime verification.
+  `face_detector_available`, `faces_detected`, `face_detection_ms`,
+  `face_tracking_ms`, `face_tracked_boxes`, and `face_privacy_mode` for runtime
+  verification.
 - A person whose face is not detected still receives a conservative head-box
   mosaic when `head_fallback_enabled` is true.
 
@@ -302,9 +312,9 @@ Verify the detector against a known face image with:
 .venv/bin/python scripts/test_face_privacy.py --image data/retinaface_test.jpg
 ```
 
-The test fails unless RetinaFace returns at least one face box and all changed
-pixels are confined to those detected boxes. The test image is intentionally
-ignored by Git.
+The test fails unless RetinaFace returns a real face box, all changed pixels
+stay inside that box, and optical flow follows a 96-pixel synthetic movement
+without losing the mosaic. The test image is intentionally ignored by Git.
 
 ### RK3588 IMX415 camera capture note
 
@@ -458,6 +468,7 @@ Check NPU status and latency:
 ```bash
 curl http://127.0.0.1:8000/api/health
 python scripts/benchmark_pipeline.py --frames 300
+python scripts/benchmark_pipeline.py --video data/privacy_motion_test.mp4 --frames 300
 ```
 
 Expected optimized health fields after `models/yolov8n.rknn` is present:

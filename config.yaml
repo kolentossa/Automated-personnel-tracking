@@ -69,8 +69,13 @@ privacy:
   face_confidence_threshold: 0.6
   face_nms_threshold: 0.4
   face_detector_threads: 1
-  face_detect_every_n_frames: 10
+  face_detect_every_n_frames: 5
   face_result_max_age_ms: 1000
-  face_mosaic_padding: 0.15
+  face_mosaic_padding: 0.25
+  face_tracking_enabled: true
+  face_tracking_min_points: 4
+  face_tracking_win_size: 31
+  face_tracking_max_level: 3
+  face_tracking_max_motion_px: 96
   head_fallback_enabled: true
   mosaic_strength: 14

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from dataclasses import dataclass
 from functools import lru_cache
 from itertools import product
 from math import ceil
@@ -16,6 +17,12 @@ import numpy as np
 from app.config import project_path
 
 Box = Tuple[int, int, int, int]
+
+
+@dataclass
+class _FlowFace:
+    box: Box
+    points: np.ndarray
 
 
 class RetinaFaceONNXDetector:
@@ -83,16 +90,21 @@ class RetinaFaceONNXDetector:
 
 
 class FaceMosaicProcessor:
-    """Run face inference off the video path and mosaic the latest face boxes."""
+    """Detect faces asynchronously and propagate boxes with per-frame optical flow."""
 
     def __init__(self, config: Dict[str, Any]) -> None:
         self.config = dict(config or {})
         self.enabled = bool(self.config.get("face_mosaic_enabled", True))
         self.head_fallback_enabled = bool(self.config.get("head_fallback_enabled", True))
         self.mosaic_strength = int(self.config.get("mosaic_strength") or 14)
-        self.mosaic_padding = float(self.config.get("face_mosaic_padding") or 0.15)
+        self.mosaic_padding = float(self.config.get("face_mosaic_padding") or 0.25)
         self.detect_every_n_frames = max(1, int(self.config.get("face_detect_every_n_frames") or 5))
         self.max_result_age_ms = max(100.0, float(self.config.get("face_result_max_age_ms") or 1000.0))
+        self.tracking_enabled = bool(self.config.get("face_tracking_enabled", True))
+        self.tracking_min_points = max(3, int(self.config.get("face_tracking_min_points") or 4))
+        self.tracking_max_motion = max(8.0, float(self.config.get("face_tracking_max_motion_px") or 96.0))
+        self.tracking_win_size = _odd(max(15, int(self.config.get("face_tracking_win_size") or 31)))
+        self.tracking_max_level = max(0, int(self.config.get("face_tracking_max_level") or 3))
         self.detector_name = "disabled"
         self.detector_available = False
         self.warning = ""
@@ -103,9 +115,16 @@ class FaceMosaicProcessor:
         self._thread: Optional[threading.Thread] = None
         self._pending_frame: Optional[np.ndarray] = None
         self._latest_boxes: List[Box] = []
+        self._latest_gray: Optional[np.ndarray] = None
         self._latest_at = 0.0
+        self._latest_generation = 0
+        self._consumed_generation = 0
+        self._flow_gray: Optional[np.ndarray] = None
+        self._flow_faces: List[_FlowFace] = []
         self._frame_index = 0
+        self._flow_frame_index = 0
         self._face_detection_ms = 0.0
+        self._face_tracking_ms = 0.0
         self._faces_detected = 0
         self._fallback_regions = 0
         self._mode = "disabled" if not self.enabled else "initializing"
@@ -125,7 +144,7 @@ class FaceMosaicProcessor:
                 input_size=int(self.config.get("face_input_size") or 320),
                 confidence_threshold=float(self.config.get("face_confidence_threshold") or 0.6),
                 nms_threshold=float(self.config.get("face_nms_threshold") or 0.4),
-                num_threads=int(self.config.get("face_detector_threads") or 2),
+                num_threads=int(self.config.get("face_detector_threads") or 1),
             )
             self.detector_name = "retinaface-mobile320-onnx"
             self.detector_available = True
@@ -162,8 +181,13 @@ class FaceMosaicProcessor:
         now = time.monotonic()
         with self._lock:
             age_ms = (now - self._latest_at) * 1000.0 if self._latest_at else float("inf")
-            faces = list(self._latest_boxes) if age_ms <= self.max_result_age_ms else []
+            generation = self._latest_generation
+            detected_boxes = list(self._latest_boxes)
+            detection_gray = self._latest_gray
 
+        tracking_started = time.monotonic()
+        faces = self._tracked_boxes(frame, detected_boxes, detection_gray, generation, age_ms)
+        self._face_tracking_ms = _ms(time.monotonic() - tracking_started)
         expanded_faces = [_expand_box(frame, box, self.mosaic_padding) for box in faces]
         expanded_faces = [box for box in expanded_faces if box is not None]
         fallback_boxes = _head_fallback_boxes(frame, people, expanded_faces) if self.head_fallback_enabled else []
@@ -181,7 +205,7 @@ class FaceMosaicProcessor:
         with self._lock:
             self._fallback_regions = len(fallback_boxes)
             if expanded_faces:
-                self._mode = "face-detected"
+                self._mode = "face-tracked" if self.tracking_enabled else "face-detected"
             elif fallback_boxes:
                 self._mode = "head-fallback"
             elif self.detector_available:
@@ -196,11 +220,62 @@ class FaceMosaicProcessor:
                 "face_detector_available": self.detector_available,
                 "face_privacy_mode": self._mode,
                 "faces_detected": self._faces_detected,
+                "face_tracked_boxes": len(self._flow_faces),
+                "face_tracking_points": sum(len(face.points) for face in self._flow_faces),
                 "face_fallback_regions": self._fallback_regions,
+                "face_detection_interval_frames": self.detect_every_n_frames,
                 "face_detection_ms": round(self._face_detection_ms, 1),
+                "face_tracking_ms": round(self._face_tracking_ms, 1),
                 "face_result_age_ms": round(age_ms, 1),
                 "face_detector_error": self.warning,
             }
+
+    def _tracked_boxes(
+        self,
+        frame: np.ndarray,
+        detected_boxes: List[Box],
+        detection_gray: Optional[np.ndarray],
+        generation: int,
+        age_ms: float,
+    ) -> List[Box]:
+        if not self.tracking_enabled:
+            return detected_boxes if age_ms <= self.max_result_age_ms else []
+        if age_ms > self.max_result_age_ms:
+            self._flow_faces = []
+            self._flow_gray = None
+            return []
+
+        has_new_detection = generation != self._consumed_generation
+        if not has_new_detection and not self._flow_faces:
+            return []
+        current_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        self._flow_frame_index += 1
+        if has_new_detection:
+            self._consumed_generation = generation
+            self._flow_faces = _adopt_face_detections(
+                detection_gray,
+                current_gray,
+                detected_boxes,
+                frame,
+                self.tracking_min_points,
+                self.tracking_win_size,
+                self.tracking_max_level,
+                self.tracking_max_motion,
+            )
+        elif self._flow_gray is not None:
+            self._flow_faces = _advance_face_tracks(
+                self._flow_gray,
+                current_gray,
+                self._flow_faces,
+                frame,
+                self.tracking_min_points,
+                self.tracking_win_size,
+                self.tracking_max_level,
+                self.tracking_max_motion,
+                self._flow_frame_index,
+            )
+        self._flow_gray = current_gray
+        return [face.box for face in self._flow_faces]
 
     def _worker_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -215,15 +290,199 @@ class FaceMosaicProcessor:
                 continue
             try:
                 boxes = self._detector.detect(frame)
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 with self._lock:
                     self._latest_boxes = boxes
+                    self._latest_gray = gray
                     self._latest_at = time.monotonic()
+                    self._latest_generation += 1
                     self._faces_detected = len(boxes)
                     self._face_detection_ms = self._detector.last_inference_ms
                     self.warning = ""
             except Exception as exc:
                 with self._lock:
                     self.warning = str(exc)
+
+
+def _adopt_face_detections(
+    source_gray: Optional[np.ndarray],
+    current_gray: np.ndarray,
+    boxes: Iterable[Box],
+    frame: np.ndarray,
+    min_points: int,
+    win_size: int,
+    max_level: int,
+    max_motion: float,
+) -> List[_FlowFace]:
+    if source_gray is None or source_gray.shape != current_gray.shape:
+        return []
+    tracks: List[_FlowFace] = []
+    for box in boxes:
+        points = _seed_flow_points(source_gray, box)
+        tracked = _track_flow_face(
+            source_gray,
+            current_gray,
+            _FlowFace(box, points),
+            frame,
+            min_points,
+            win_size,
+            max_level,
+            max_motion,
+            reseed=True,
+        )
+        if tracked is not None:
+            tracks.append(tracked)
+    return tracks
+
+
+def _advance_face_tracks(
+    previous_gray: np.ndarray,
+    current_gray: np.ndarray,
+    tracks: Iterable[_FlowFace],
+    frame: np.ndarray,
+    min_points: int,
+    win_size: int,
+    max_level: int,
+    max_motion: float,
+    frame_index: int,
+) -> List[_FlowFace]:
+    advanced: List[_FlowFace] = []
+    for face in tracks:
+        tracked = _track_flow_face(
+            previous_gray,
+            current_gray,
+            face,
+            frame,
+            min_points,
+            win_size,
+            max_level,
+            max_motion,
+            reseed=frame_index % 5 == 0 or len(face.points) < 12,
+        )
+        if tracked is not None:
+            advanced.append(tracked)
+    return advanced
+
+
+def _track_flow_face(
+    previous_gray: np.ndarray,
+    current_gray: np.ndarray,
+    face: _FlowFace,
+    frame: np.ndarray,
+    min_points: int,
+    win_size: int,
+    max_level: int,
+    max_motion: float,
+    *,
+    reseed: bool,
+) -> Optional[_FlowFace]:
+    points = face.points if len(face.points) >= min_points else _seed_flow_points(previous_gray, face.box)
+    if len(points) < min_points:
+        return None
+    next_points, status, errors = cv2.calcOpticalFlowPyrLK(
+        previous_gray,
+        current_gray,
+        points,
+        None,
+        winSize=(win_size, win_size),
+        maxLevel=max_level,
+        criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 20, 0.01),
+    )
+    if next_points is None or status is None:
+        return None
+    valid = status.reshape(-1).astype(bool)
+    if errors is not None:
+        valid &= np.isfinite(errors.reshape(-1)) & (errors.reshape(-1) < 50.0)
+    previous_good = points.reshape(-1, 2)[valid]
+    current_good = next_points.reshape(-1, 2)[valid]
+    if len(current_good) < min_points:
+        return None
+
+    moved_box = _flow_box(face.box, previous_good, current_good, frame, max_motion)
+    if moved_box is None:
+        return None
+    tracked_points = current_good.reshape(-1, 1, 2).astype(np.float32)
+    if reseed:
+        seeded = _seed_flow_points(current_gray, moved_box)
+        if len(seeded) >= min_points:
+            tracked_points = seeded
+    return _FlowFace(moved_box, tracked_points)
+
+
+def _flow_box(
+    box: Box,
+    previous_points: np.ndarray,
+    current_points: np.ndarray,
+    frame: np.ndarray,
+    max_motion: float,
+) -> Optional[Box]:
+    x1, y1, x2, y2 = [float(value) for value in box]
+    old_center = np.asarray(((x1 + x2) / 2.0, (y1 + y2) / 2.0), dtype=np.float32)
+    transformed: Optional[np.ndarray] = None
+    if len(current_points) >= 4:
+        matrix, _ = cv2.estimateAffinePartial2D(
+            previous_points,
+            current_points,
+            method=cv2.RANSAC,
+            ransacReprojThreshold=3.0,
+            maxIters=50,
+            confidence=0.95,
+            refineIters=5,
+        )
+        if matrix is not None:
+            scale = float(np.hypot(matrix[0, 0], matrix[0, 1]))
+            if 0.7 <= scale <= 1.4:
+                corners = np.asarray(((x1, y1), (x2, y1), (x2, y2), (x1, y2)), dtype=np.float32)
+                transformed = cv2.transform(corners[None, ...], matrix)[0]
+    if transformed is None:
+        delta = np.median(current_points - previous_points, axis=0)
+        transformed = np.asarray(
+            ((x1 + delta[0], y1 + delta[1]), (x2 + delta[0], y2 + delta[1])),
+            dtype=np.float32,
+        )
+
+    new_x1 = float(np.min(transformed[:, 0]))
+    new_y1 = float(np.min(transformed[:, 1]))
+    new_x2 = float(np.max(transformed[:, 0]))
+    new_y2 = float(np.max(transformed[:, 1]))
+    new_center = np.asarray(((new_x1 + new_x2) / 2.0, (new_y1 + new_y2) / 2.0), dtype=np.float32)
+    if float(np.linalg.norm(new_center - old_center)) > max_motion:
+        return None
+    old_width, old_height = max(1.0, x2 - x1), max(1.0, y2 - y1)
+    new_width, new_height = new_x2 - new_x1, new_y2 - new_y1
+    if not (0.65 * old_width <= new_width <= 1.5 * old_width):
+        return None
+    if not (0.65 * old_height <= new_height <= 1.5 * old_height):
+        return None
+    return _clip_box(frame, (new_x1, new_y1, new_x2, new_y2))
+
+
+def _seed_flow_points(gray: np.ndarray, box: Sequence[float]) -> np.ndarray:
+    height, width = gray.shape[:2]
+    x1, y1, x2, y2 = [int(round(float(value))) for value in box]
+    x1, y1 = max(0, min(width - 1, x1)), max(0, min(height - 1, y1))
+    x2, y2 = max(0, min(width, x2)), max(0, min(height, y2))
+    if x2 <= x1 or y2 <= y1:
+        return np.empty((0, 1, 2), dtype=np.float32)
+    points = cv2.goodFeaturesToTrack(
+        gray[y1:y2, x1:x2],
+        maxCorners=40,
+        qualityLevel=0.01,
+        minDistance=4,
+        blockSize=3,
+    )
+    if points is not None and len(points) >= 4:
+        points = points.astype(np.float32)
+        points[:, 0, 0] += x1
+        points[:, 0, 1] += y1
+        return points
+    xs = np.linspace(x1 + (x2 - x1) * 0.2, x2 - (x2 - x1) * 0.2, 4)
+    ys = np.linspace(y1 + (y2 - y1) * 0.2, y2 - (y2 - y1) * 0.2, 4)
+    return np.asarray([[[x, y]] for y in ys for x in xs], dtype=np.float32)
+
+
+def _odd(value: int) -> int:
+    return value if value % 2 else value + 1
 
 
 def apply_privacy_mosaic(

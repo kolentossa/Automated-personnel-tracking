@@ -69,7 +69,9 @@ def main() -> int:
             "face_detector": "retinaface-onnx",
             "face_model_path": str(args.model),
             "face_detect_every_n_frames": 1,
-            "head_fallback_enabled": True,
+            "face_mosaic_padding": 0.1,
+            "face_tracking_enabled": True,
+            "head_fallback_enabled": False,
         }
     )
     processor.start()
@@ -86,11 +88,36 @@ def main() -> int:
     async_status = processor.snapshot()
     if (
         async_status["faces_detected"] == 0
-        or async_status["face_privacy_mode"] != "face-detected"
+        or async_status["face_privacy_mode"] != "face-tracked"
         or not np.any(frame != async_result)
     ):
         print(f"error: asynchronous face processor did not mosaic a detected face: {async_status}", file=sys.stderr)
         return 6
+
+    expected_x = (face_boxes[0][0] + face_boxes[0][2]) / 2.0
+    expected_y = (face_boxes[0][1] + face_boxes[0][3]) / 2.0
+    motion_errors = []
+    for step in range(1, 9):
+        shift_x = step * 12
+        transform = np.asarray(((1.0, 0.0, shift_x), (0.0, 1.0, 0.0)), dtype=np.float32)
+        moving_frame = cv2.warpAffine(frame, transform, (frame.shape[1], frame.shape[0]))
+        moving_result = processor.process(moving_frame, [(0, 0, frame.shape[1], frame.shape[0])])
+        moving_diff = np.any(moving_frame != moving_result, axis=2).astype(np.uint8)
+        changed_points = cv2.findNonZero(moving_diff)
+        if changed_points is None:
+            print(f"error: optical-flow mosaic disappeared at movement step {step}", file=sys.stderr)
+            return 7
+        x, y, width, height = cv2.boundingRect(changed_points)
+        actual_center = np.asarray((x + width / 2.0, y + height / 2.0))
+        expected_center = np.asarray((expected_x + shift_x, expected_y))
+        motion_errors.append(float(np.linalg.norm(actual_center - expected_center)))
+    moving_status = processor.snapshot()
+    if max(motion_errors) > 20.0 or moving_status["face_tracked_boxes"] < 1:
+        print(
+            f"error: optical-flow face tracking drifted: max_error={max(motion_errors):.1f}, status={moving_status}",
+            file=sys.stderr,
+        )
+        return 8
 
     print(f"face_detector: retinaface-mobile320-onnx")
     print(f"faces_detected: {len(face_boxes)}")
@@ -100,6 +127,10 @@ def main() -> int:
     print("fixed_head_fallback_used: false")
     print(f"async_face_privacy_mode: {async_status['face_privacy_mode']}")
     print(f"async_faces_detected: {async_status['faces_detected']}")
+    print(f"motion_steps: {len(motion_errors)}")
+    print(f"motion_shift_px: {len(motion_errors) * 12}")
+    print(f"motion_max_center_error_px: {max(motion_errors):.1f}")
+    print(f"face_tracking_ms: {moving_status['face_tracking_ms']:.1f}")
     print("status: ok")
     return 0
 
