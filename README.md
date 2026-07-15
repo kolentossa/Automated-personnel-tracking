@@ -186,8 +186,11 @@ This project is designed for local, anonymous counting.
 - The generated sample video is synthetic and contains no real people.
 - The system does not perform face recognition or biometric identification.
 - Tracking IDs are temporary anonymous IDs, not real identities.
-- Stored events contain only timestamp, event type, and temporary tracking ID.
-- Frames are processed transiently in memory and discarded after each pipeline step.
+- Crossing events contain only timestamp, event type, and temporary tracking
+  ID. Behavior events also include confidence, duration, related boxes, and
+  configured local evidence paths.
+- Frames are transient unless a behavior event requests privacy-mosaiced local
+  evidence. Unmasked camera frames are never persisted by default.
 
 Anonymous event example:
 
@@ -262,6 +265,7 @@ GET  /                  Web dashboard
 GET  /video             MJPEG stream
 GET  /api/stats         JSON statistics
 GET  /api/health        Service and camera health
+GET  /api/events        Recent phone/smoking behavior events
 GET  /api/config/counting
                           Current counting-line and enter-direction config
 POST /api/config/counting
@@ -327,7 +331,8 @@ non-person objects are not counted as people.
 Privacy behavior:
 
 - Frames are processed locally on the RK3588.
-- Raw unmasked camera frames are not saved by the Web app.
+- Raw unmasked camera frames are not saved by the Web app. Behavior alerts can
+  save unannotated and annotated evidence only after face/head mosaic.
 - Mosaic anonymisation is applied before JPEG frames are sent to the browser.
 - Face recognition, identity recognition, ReID, embeddings, and face databases
   are not used.
@@ -423,12 +428,46 @@ curl -X POST http://127.0.0.1:8001/api/config/counting \
   -d '{"line":{"x1":640,"y1":0,"x2":640,"y2":720},"direction":"left_to_right"}'
 ```
 
+### Phone and smoking behavior detection
+
+The feature branch `feature/rk3588-phone-smoking-detection` adds multi-class
+RKNN output, phone-to-person association, phone-call/phone-playing/restricted
+photography state machines, a pluggable smoking detector, asynchronous
+privacy-safe evidence, `/api/events`, RTSP input, and a board benchmark.
+
+The existing COCO YOLOv8n model supplies `person` and `cell phone` from one NPU
+inference. Real cigarette, smoke, flame, lighter, and hand inference requires a
+separate custom `models/behavior_yolov8n.rknn`; that weight is not currently in
+the repository or board model set. Missing optional weights are reported as a
+degraded behavior status and never replaced with fabricated or motion-based
+detections.
+
+Configuration, model conversion, event JSON, decision limits, tests, and
+performance instructions are documented in:
+
+- `docs/rk3588_behavior_detection.md`
+- `docs/rk3588_behavior_acceptance_checklist.md`
+- `docs/rk3588_behavior_benchmark_results.md`
+
+Run all behavior and regression tests:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Run the 300-frame RK3588 benchmark:
+
+```bash
+python scripts/benchmark_behavior_pipeline.py --frames 300
+```
+
 ### Person detector selection
 
 The motion detector is only a fallback for synthetic demos. It detects moving
 foreground blobs and will mark non-person moving objects, so it should not be
 used for the live camera deployment. The RK3588 optimized path defaults to
-RKNN YOLO on the NPU and keeps only COCO class `person`:
+RKNN YOLO on the NPU and returns COCO `person` and `cell phone` in one pass.
+The tracker still receives only `person`; the behavior layer receives both:
 
 ```yaml
 detector:
@@ -438,7 +477,8 @@ detector:
   input_size: 640
   confidence_threshold: 0.35
   nms_threshold: 0.45
-  class_filter: ["person"]
+  class_filter: ["person", "cell phone"]
+  core_mask: "0_1_2"
   fallback_to_cpu: false
 ```
 
