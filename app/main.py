@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import os
 import threading
 import time
@@ -91,6 +92,14 @@ class TrackingRuntime:
         self.stream_config = self.config.get("stream", {})
         self.target_fps = float(self.performance_config.get("target_fps") or 30)
         self.detect_every_n_frames = max(1, int(self.performance_config.get("detect_every_n_frames") or 1))
+        self.memory_trim_every_n_frames = max(
+            0, int(self.performance_config.get("memory_trim_every_n_frames") or 0)
+        )
+        self._malloc_trim, self._heap_trim_error = _load_malloc_trim()
+        self._heap_trim_count = 0
+        self._heap_trim_released_count = 0
+        self._heap_gc_run_count = 0
+        self._heap_gc_collected_count = 0
         self.jpeg_quality = max(35, min(95, int(self.stream_config.get("jpeg_quality") or 80)))
         self.stream_width = max(0, int(self.stream_config.get("width") or 0))
         self.stream_height = max(0, int(self.stream_config.get("height") or 0))
@@ -102,6 +111,10 @@ class TrackingRuntime:
         self._latest_jpeg = _placeholder_jpeg("Starting camera tracking service")
         self._latest_camera_frame: Optional[CameraFrame] = None
         self._latest_camera_frame_id = 0
+        self._last_processed_camera_frame_id = 0
+        self._camera_frames_captured = 0
+        self._camera_frames_processed = 0
+        self._camera_frames_dropped = 0
         self._last_capture_ms = 0.0
         self._last_detections: list[Detection] = []
         self._last_scene_detections: list[Detection] = []
@@ -187,12 +200,14 @@ class TrackingRuntime:
         privacy_ok = not privacy_required or bool(stats.get("face_detector_available"))
         behavior_required = bool(stats.get("behavior_model_enabled")) and bool(stats.get("behavior_model_required"))
         behavior_ok = not behavior_required or bool(stats.get("behavior_model_available"))
+        behavior_error = str(stats.get("behavior_model_error") or "")
         ok = (
             bool(stats.get("running"))
             and stats.get("camera_status") == "online"
             and not stats.get("last_error")
             and privacy_ok
             and behavior_ok
+            and not behavior_error
         )
         data = {
             "status": "ok" if ok else "error",
@@ -201,19 +216,37 @@ class TrackingRuntime:
             "source": stats.get("source", ""),
             "fps": stats.get("fps", 0.0),
             "latency_ms": stats.get("latency_ms", 0.0),
-            "error": stats.get("last_error", ""),
+            "error": stats.get("last_error", "") or behavior_error,
             "available_cameras": stats.get("available_cameras", []),
             "detector": stats.get("detector", ""),
             "npu_enabled": stats.get("npu_enabled", False),
         }
         for key in TIMING_KEYS:
             data[key] = stats.get(key, 0.0)
+        for key in (
+            "capture_queue_capacity",
+            "capture_queue_depth",
+            "camera_frames_captured",
+            "camera_frames_processed",
+            "camera_frames_dropped",
+            "camera_open_attempts",
+            "camera_successful_opens",
+            "camera_reconnect_count",
+            "camera_read_failures",
+            "heap_trim_every_n_frames",
+            "heap_trim_count",
+            "heap_trim_released_count",
+            "heap_gc_run_count",
+            "heap_gc_collected_count",
+        ):
+            data[key] = stats.get(key, 0)
+        data["heap_trim_error"] = stats.get("heap_trim_error", "")
         data.update(self.privacy.snapshot())
         data.update(self.behavior.snapshot())
         data.update(self.behavior_detector.snapshot())
         data.update(self.behavior_events.snapshot())
         data["phone_detection_available"] = self._phone_detection_available()
-        data["smoking_detection_available"] = bool(self.behavior_detector.available)
+        data["smoking_detection_available"] = self.behavior_detector.smoking_detection_available
         data["behavior_status"] = self._behavior_status()
         data["cpu_affinity"] = self.cpu_affinity
         data["cpu_affinity_error"] = self.cpu_affinity_error
@@ -221,16 +254,35 @@ class TrackingRuntime:
 
     def stats_snapshot(self) -> dict:
         data = self.stats.snapshot()
+        data.update(self.camera.snapshot())
+        data.update(self._pipeline_snapshot())
         data.update(self.privacy.snapshot())
         data.update(self.behavior.snapshot())
         data.update(self.behavior_detector.snapshot())
         data.update(self.behavior_events.snapshot())
         data["phone_detection_available"] = self._phone_detection_available()
-        data["smoking_detection_available"] = bool(self.behavior_detector.available)
+        data["smoking_detection_available"] = self.behavior_detector.smoking_detection_available
         data["behavior_status"] = self._behavior_status()
         data["cpu_affinity"] = self.cpu_affinity
         data["cpu_affinity_error"] = self.cpu_affinity_error
         return data
+
+    def _pipeline_snapshot(self) -> dict:
+        with self._lock:
+            queue_depth = int(self._latest_camera_frame_id > self._last_processed_camera_frame_id)
+            return {
+                "capture_queue_capacity": 1,
+                "capture_queue_depth": queue_depth,
+                "camera_frames_captured": int(self._camera_frames_captured),
+                "camera_frames_processed": int(self._camera_frames_processed),
+                "camera_frames_dropped": int(self._camera_frames_dropped),
+                "heap_trim_every_n_frames": int(self.memory_trim_every_n_frames),
+                "heap_trim_count": int(self._heap_trim_count),
+                "heap_trim_released_count": int(self._heap_trim_released_count),
+                "heap_gc_run_count": int(self._heap_gc_run_count),
+                "heap_gc_collected_count": int(self._heap_gc_collected_count),
+                "heap_trim_error": self._heap_trim_error,
+            }
 
     def recent_behavior_events(self, limit: int = 50) -> dict:
         return {"events": self.behavior_events.recent(limit)}
@@ -242,7 +294,9 @@ class TrackingRuntime:
         if not self.behavior.enabled:
             return "disabled"
         model = self.behavior_detector
-        if self.behavior.smoking.enabled and not model.available:
+        if model.error:
+            return "error" if model.required else "degraded"
+        if self.behavior.smoking.enabled and not model.smoking_detection_available:
             return "error" if model.required else "degraded"
         return "ready"
 
@@ -259,23 +313,28 @@ class TrackingRuntime:
                 time.sleep(0.2)
                 continue
             with self._frame_ready:
+                if self._latest_camera_frame_id > self._last_processed_camera_frame_id:
+                    self._camera_frames_dropped += 1
                 self._latest_camera_frame = frame_packet
                 self._latest_camera_frame_id += 1
+                self._camera_frames_captured += 1
                 self._last_capture_ms = round(capture_ms, 1)
                 self._frame_ready.notify()
 
     def _processing_loop(self) -> None:
-        last_processed_frame_id = 0
         while not self._stop_event.is_set():
             with self._frame_ready:
-                if self._latest_camera_frame_id == last_processed_frame_id:
+                if self._latest_camera_frame_id == self._last_processed_camera_frame_id:
                     self._frame_ready.wait(timeout=0.1)
                 frame_packet = self._latest_camera_frame
                 frame_id = self._latest_camera_frame_id
                 capture_ms = self._last_capture_ms
-            if frame_packet is None or frame_id == last_processed_frame_id:
+                has_new_frame = frame_packet is not None and frame_id != self._last_processed_camera_frame_id
+                if has_new_frame:
+                    self._last_processed_camera_frame_id = frame_id
+                    self._camera_frames_processed += 1
+            if not has_new_frame:
                 continue
-            last_processed_frame_id = frame_id
             try:
                 queue_wait_ms = max(0.0, _ms(time.monotonic() - frame_packet.captured_at))
                 self._process_frame(frame_packet, capture_ms, queue_wait_ms)
@@ -368,6 +427,25 @@ class TrackingRuntime:
             running=True,
             last_error=self.detector.warning,
         )
+        self._maybe_trim_heap()
+
+    def _maybe_trim_heap(self) -> None:
+        interval = self.memory_trim_every_n_frames
+        if interval <= 0 or self._frame_index % interval != 0:
+            return
+        collected = gc.collect()
+        self._heap_gc_run_count += 1
+        self._heap_gc_collected_count += int(collected)
+        if self._malloc_trim is None:
+            return
+        try:
+            released = int(self._malloc_trim(0))
+            self._heap_trim_count += 1
+            self._heap_trim_released_count += int(released > 0)
+            self._heap_trim_error = ""
+        except Exception as exc:
+            self._heap_trim_error = str(exc)
+            self._malloc_trim = None
 
     def _prepare_stream_frame(self, frame: np.ndarray) -> np.ndarray:
         if self.stream_width <= 0 or self.stream_height <= 0:
@@ -524,6 +602,20 @@ def _apply_cpu_affinity(value) -> tuple[list[int], str]:
         return sorted(os.sched_getaffinity(0)), ""
     except Exception as exc:
         return [], str(exc)
+
+
+def _load_malloc_trim():
+    if os.name != "posix":
+        return None, "malloc_trim is only available on POSIX glibc systems"
+    try:
+        import ctypes
+
+        trim = ctypes.CDLL(None).malloc_trim
+        trim.argtypes = [ctypes.c_size_t]
+        trim.restype = ctypes.c_int
+        return trim, ""
+    except Exception as exc:
+        return None, str(exc)
 
 
 runtime = TrackingRuntime()

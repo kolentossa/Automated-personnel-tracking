@@ -59,6 +59,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "detect_every_n_frames": 3,
         "cpu_affinity": "4-7",
         "timing_window_frames": 30,
+        "memory_trim_every_n_frames": 300,
     },
     "stream": {"jpeg_quality": 74, "width": 800, "height": 450},
     "tracking": {"iou_threshold": 0.3, "max_missing": 20, "min_confidence": 0.15},

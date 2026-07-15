@@ -44,6 +44,21 @@ class BehaviorEventManagerTests(TestCase):
             self.assertGreaterEqual(snapshot["behavior_event_write_failures"], 1)
             self.assertTrue(snapshot["behavior_event_last_error"])
 
+    def test_event_history_is_restored_after_service_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first = BehaviorEventManager(_event_config(), "camera-test", project_root=root)
+            first.start()
+            first.emit(_trigger(), np.zeros((120, 160, 3), dtype=np.uint8))
+            first._queue.join()
+            event_id = first.recent(1)[0]["event_id"]
+            first.stop()
+
+            restarted = BehaviorEventManager(_event_config(), "camera-test", project_root=root)
+            restarted.start()
+            self.assertEqual(restarted.recent(1)[0]["event_id"], event_id)
+            restarted.stop()
+
 
 class FailurePathTests(TestCase):
     def test_missing_behavior_model_is_explicit_and_safe(self) -> None:
@@ -58,12 +73,20 @@ class FailurePathTests(TestCase):
         self.assertIn("not found", detector.error)
         self.assertEqual(detector.detect(np.zeros((32, 32, 3), dtype=np.uint8), 0), [])
 
+    def test_required_behavior_inference_error_is_not_silenced(self) -> None:
+        detector = BehaviorObjectDetector({"enabled": False, "required": True})
+        detector.enabled = True
+        detector._detector = _FailedDetector()
+        with self.assertRaisesRegex(RuntimeError, "inference failed"):
+            detector.detect(np.zeros((32, 32, 3), dtype=np.uint8), 0)
+
     def test_missing_video_reports_error_without_crashing(self) -> None:
         camera = CameraSource({
             "source_type": "video",
             "video_file": "data/does-not-exist.mp4",
             "retry_interval_sec": 0,
         })
+        self.assertEqual(camera.retry_interval_sec, 0)
         self.assertIsNone(camera.read())
         self.assertEqual(camera.status, "error")
         self.assertIn("does not exist", camera.error)
@@ -79,6 +102,16 @@ class FailurePathTests(TestCase):
         self.assertIsNone(camera._capture)
         self.assertEqual(camera.status, "error")
         self.assertIn("Could not read", camera.error)
+        self.assertEqual(camera.snapshot()["camera_read_failures"], 1)
+
+    def test_camera_reopen_is_counted_as_reconnect(self) -> None:
+        camera = _ReopenCamera()
+        self.assertIsNotNone(camera.read())
+        camera.release()
+        self.assertIsNotNone(camera.read())
+        snapshot = camera.snapshot()
+        self.assertEqual(snapshot["camera_successful_opens"], 2)
+        self.assertEqual(snapshot["camera_reconnect_count"], 1)
 
     def test_invalid_rtsp_config_is_rejected_and_credentials_are_redacted(self) -> None:
         camera = CameraSource({"source_type": "rtsp", "rtsp_url": "http://invalid", "retry_interval_sec": 0})
@@ -123,3 +156,32 @@ class _FailedCapture:
 
     def release(self) -> None:
         self.released = True
+
+
+class _FailedDetector:
+    last_profile = {}
+
+    def detect(self, _frame):
+        raise ValueError("invalid output shape")
+
+
+class _OneFrameCapture:
+    def read(self):
+        return True, np.zeros((8, 8, 3), dtype=np.uint8)
+
+    def release(self) -> None:
+        return None
+
+
+class _ReopenCamera(CameraSource):
+    def __init__(self) -> None:
+        super().__init__({"source_type": "camera", "retry_interval_sec": 0})
+
+    def open(self) -> bool:
+        self.open_attempts += 1
+        self._capture = _OneFrameCapture()
+        self.selected_source = "/dev/video-test"
+        self.status = "online"
+        self.error = ""
+        self._mark_opened()
+        return True

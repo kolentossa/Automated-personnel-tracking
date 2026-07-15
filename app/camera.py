@@ -33,7 +33,8 @@ class CameraSource:
         self.width = int(config.get("width") or 1280)
         self.height = int(config.get("height") or 720)
         self.target_fps = float(config.get("fps") or 0)
-        self.retry_interval_sec = float(config.get("retry_interval_sec") or 3.0)
+        retry_interval = config.get("retry_interval_sec")
+        self.retry_interval_sec = max(0.0, float(3.0 if retry_interval is None else retry_interval))
         self.video_file = str(config.get("video_file") or "data/sample.mp4")
         self.rtsp_url = str(config.get("rtsp_url") or "")
         self.gstreamer_pipeline_template = str(
@@ -48,6 +49,11 @@ class CameraSource:
         self.available_devices: List[Dict[str, Any]] = []
         self._capture: Optional[cv2.VideoCapture] = None
         self._last_open_attempt = 0.0
+        self.open_attempts = 0
+        self.successful_opens = 0
+        self.reconnect_count = 0
+        self.read_failures = 0
+        self._ever_opened = False
 
     def read(self) -> Optional[CameraFrame]:
         if self._capture is None:
@@ -71,12 +77,14 @@ class CameraSource:
                 return CameraFrame(frame=frame, captured_at=time.monotonic(), source=self.selected_source)
         self.status = "error"
         self.error = f"Could not read a frame from {self.selected_source or self.camera_device}"
+        self.read_failures += 1
         self.release()
         return None
 
     def open(self) -> bool:
         self.release()
         self._last_open_attempt = time.monotonic()
+        self.open_attempts += 1
         if self.source_type == "video":
             return self._open_video_file()
         if self.source_type == "rtsp":
@@ -89,6 +97,21 @@ class CameraSource:
         self._capture = None
         if self.status == "online":
             self.status = "offline"
+
+    def snapshot(self) -> Dict[str, int]:
+        return {
+            "camera_open_attempts": int(self.open_attempts),
+            "camera_successful_opens": int(self.successful_opens),
+            "camera_reconnect_count": int(self.reconnect_count),
+            "camera_read_failures": int(self.read_failures),
+        }
+
+    def _mark_opened(self) -> None:
+        self.successful_opens += 1
+        if self._ever_opened:
+            self.reconnect_count += 1
+        else:
+            self._ever_opened = True
 
     def _open_video_file(self) -> bool:
         path = project_path(self.video_file)
@@ -106,6 +129,7 @@ class CameraSource:
         self._capture = capture
         self.status = "online"
         self.error = ""
+        self._mark_opened()
         return True
 
     def _open_rtsp(self) -> bool:
@@ -128,6 +152,7 @@ class CameraSource:
         self._capture = capture
         self.status = "online"
         self.error = ""
+        self._mark_opened()
         return True
 
     def _open_camera(self) -> bool:
@@ -144,6 +169,7 @@ class CameraSource:
                     self.selected_backend = "gstreamer"
                     self.status = "online"
                     self.error = ""
+                    self._mark_opened()
                     return True
                 if capture is not None:
                     capture.release()
@@ -157,6 +183,7 @@ class CameraSource:
                     self.selected_backend = "v4l2"
                     self.status = "online"
                     self.error = ""
+                    self._mark_opened()
                     return True
                 if capture is not None:
                     capture.release()

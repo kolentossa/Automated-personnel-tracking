@@ -58,6 +58,8 @@ def main() -> int:
         "encode_ms", "total_latency_ms",
     )}
     npu_samples: List[float] = []
+    primary_inference_samples: List[float] = []
+    behavior_inference_samples: List[float] = []
     last_scene = []
     last_people = []
     detector_has_run = False
@@ -85,11 +87,14 @@ def main() -> int:
                 profile = {"preprocess_ms": 0.0, "inference_ms": 0.0, "postprocess_ms": 0.0}
             for key in ("preprocess_ms", "inference_ms", "postprocess_ms"):
                 samples[key].append(float(profile.get(key, 0.0) or 0.0))
+            if float(profile.get("inference_ms", 0.0) or 0.0) > 0:
+                primary_inference_samples.append(float(profile["inference_ms"]))
 
             auxiliary = behavior_detector.detect(frame, frame_index)
-            samples["behavior_inference_ms"].append(
-                float(behavior_detector.last_profile.get("inference_ms", 0.0) or 0.0)
-            )
+            behavior_inference_ms = float(behavior_detector.last_profile.get("inference_ms", 0.0) or 0.0)
+            samples["behavior_inference_ms"].append(behavior_inference_ms)
+            if behavior_inference_ms > 0:
+                behavior_inference_samples.append(behavior_inference_ms)
             tracking_started = time.monotonic()
             tracks = tracker.update(last_people)
             samples["tracking_ms"].append(_ms(time.monotonic() - tracking_started))
@@ -130,12 +135,25 @@ def main() -> int:
         "frames": args.frames,
         "average_fps": round(args.frames / wall_seconds, 2),
         "average_latency_ms": round(statistics.fmean(samples["total_latency_ms"]), 2),
+        "p50_latency_ms": round(_percentile(samples["total_latency_ms"], 50), 2),
         "p95_latency_ms": round(_percentile(samples["total_latency_ms"], 95), 2),
         "average_stage_ms": {key: round(statistics.fmean(values), 2) for key, values in samples.items() if values},
         "cpu_percent_process": round(cpu_seconds / wall_seconds * 100.0, 2),
         "peak_memory_mb": round(_peak_memory_mb(), 2),
         "npu_load_percent_average": round(statistics.fmean(npu_samples), 2) if npu_samples else None,
         "npu_load_samples": len(npu_samples),
+        "primary_inference_run_ms": _sample_summary(primary_inference_samples),
+        "behavior_inference_run_ms": _sample_summary(behavior_inference_samples),
+        "primary_detect_every_n_frames": detect_interval,
+        "behavior_detect_every_n_frames": int(
+            behavior_detector.snapshot().get("behavior_model_detect_every_n_frames") or 1
+        ),
+        "capture_queue_capacity": 1,
+        "capture_queue_depth": 0,
+        "camera_frames_captured": args.frames,
+        "camera_frames_processed": args.frames,
+        "camera_frames_dropped": 0,
+        **camera.snapshot(),
         "detector": detector.name,
         "npu_enabled": detector.npu_enabled,
         "behavior_model": behavior_detector.snapshot(),
@@ -174,6 +192,17 @@ def _percentile(values: List[float], percentile: int) -> float:
     ordered = sorted(values)
     index = max(0, min(len(ordered) - 1, int(round((percentile / 100.0) * (len(ordered) - 1)))))
     return ordered[index]
+
+
+def _sample_summary(values: List[float]) -> dict:
+    if not values:
+        return {"count": 0, "average_ms": 0.0, "p50_ms": 0.0, "p95_ms": 0.0}
+    return {
+        "count": len(values),
+        "average_ms": round(statistics.fmean(values), 2),
+        "p50_ms": round(_percentile(values, 50), 2),
+        "p95_ms": round(_percentile(values, 95), 2),
+    }
 
 
 def _cpu_seconds() -> float:
