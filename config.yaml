@@ -13,6 +13,7 @@ camera:
   retry_interval_sec: 3.0
   gstreamer_pipeline: "v4l2src device={device} ! video/x-raw,format=NV12,width={width},height={height} ! videoconvert ! video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false"
   video_file: data/sample.mp4
+  rtsp_url: ""
 
 detector:
   type: rknn-yolo
@@ -21,7 +22,9 @@ detector:
   input_size: 640
   confidence_threshold: 0.35
   nms_threshold: 0.45
-  class_filter: ["person"]
+  class_filter: ["person", "cell phone"]
+  core_mask: "0_1_2"
+  expected_sha256: ff3a64e6fe180203128c8d42456b458d208d3a1e2217d63683af00d6194e82ea
   fallback_to_cpu: false
 
 detection:

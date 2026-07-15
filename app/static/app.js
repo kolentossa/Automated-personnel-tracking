@@ -15,12 +15,17 @@ const fields = {
   fps: document.querySelector("#fps"),
   totalLatencyMs: document.querySelector("#total-latency-ms"),
   inferenceMs: document.querySelector("#inference-ms"),
+  behaviorAlerts: document.querySelector("#behavior-alerts"),
   cameraStatus: document.querySelector("#camera-status"),
   source: document.querySelector("#source"),
   detector: document.querySelector("#detector"),
   npuEnabled: document.querySelector("#npu-enabled"),
   privacy: document.querySelector("#privacy"),
+  behaviorStatus: document.querySelector("#behavior-status"),
+  phoneDetector: document.querySelector("#phone-detector"),
+  smokingDetector: document.querySelector("#smoking-detector"),
   events: document.querySelector("#events"),
+  behaviorEvents: document.querySelector("#behavior-events"),
   countingLine: document.querySelector("#counting-line"),
   countingState: document.querySelector("#counting-config-state"),
 };
@@ -70,6 +75,28 @@ function renderEvents(events) {
   }
 }
 
+function renderBehaviorEvents(events) {
+  fields.behaviorEvents.innerHTML = "";
+  if (!events.length) {
+    const item = document.createElement("li");
+    item.className = "empty";
+    item.textContent = "No behavior alerts yet";
+    fields.behaviorEvents.appendChild(item);
+    return;
+  }
+  for (const event of events.slice(0, 10)) {
+    const item = document.createElement("li");
+    const timestamp = event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : "--:--:--";
+    const type = String(event.event_type || "event").replaceAll("_", " ");
+    item.innerHTML = `
+      <span class="event-time">${timestamp}</span>
+      <span class="event-type behavior">${type}</span>
+      <span class="event-detail">ID ${event.track_id ?? "-"} | ${Math.round((event.confidence || 0) * 100)}%</span>
+    `;
+    fields.behaviorEvents.appendChild(item);
+  }
+}
+
 function renderStats(stats) {
   fields.currentOccupancy.textContent = stats.current_occupancy ?? 0;
   fields.totalEntered.textContent = stats.total_entered ?? 0;
@@ -78,11 +105,17 @@ function renderStats(stats) {
   fields.fps.textContent = stats.fps ?? 0;
   fields.totalLatencyMs.textContent = stats.total_latency_ms ?? stats.latency_ms ?? 0;
   fields.inferenceMs.textContent = stats.inference_ms ?? 0;
+  const behaviorCounts = stats.behavior_event_counts || {};
+  fields.behaviorAlerts.textContent = Object.values(behaviorCounts).reduce((sum, value) => sum + Number(value || 0), 0);
   fields.source.textContent = stats.source || "-";
   fields.detector.textContent = stats.detector || "-";
   fields.npuEnabled.textContent = stats.npu_enabled ? "ON" : "OFF";
   fields.privacy.textContent = stats.face_mosaic_enabled ? "ON - face/head mosaic" : "OFF";
+  fields.behaviorStatus.textContent = stats.behavior_status || "-";
+  fields.phoneDetector.textContent = stats.phone_detection_available ? "READY" : "UNAVAILABLE";
+  fields.smokingDetector.textContent = stats.smoking_detection_available ? "READY" : "MODEL REQUIRED";
   renderEvents(stats.recent_events || []);
+  renderBehaviorEvents(stats.behavior_events || []);
   setStatus(stats);
 }
 

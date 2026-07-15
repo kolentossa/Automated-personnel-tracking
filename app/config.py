@@ -7,6 +7,7 @@ PyYAML.
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Iterable
@@ -27,6 +28,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "gstreamer_pipeline": "v4l2src device={device} ! video/x-raw,format=NV12,width={width},height={height} ! videoconvert ! video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false",
         "retry_interval_sec": 3.0,
         "video_file": "data/sample.mp4",
+        "rtsp_url": "",
     },
     "detection": {
         "model_path": "models/MobileNetSSD_deploy.caffemodel",
@@ -44,7 +46,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "input_size": 640,
         "confidence_threshold": 0.35,
         "nms_threshold": 0.45,
-        "class_filter": ["person"],
+        "class_filter": ["person", "cell phone"],
+        "core_mask": "0_1_2",
+        "expected_sha256": "ff3a64e6fe180203128c8d42456b458d208d3a1e2217d63683af00d6194e82ea",
         "fallback_to_cpu": False,
     },
     "performance": {
@@ -88,9 +92,22 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 def load_config(path: Path = CONFIG_PATH) -> Dict[str, Any]:
     config = deepcopy(DEFAULT_CONFIG)
     if path.exists():
-        parsed = _parse_simple_yaml(path.read_text(encoding="utf-8"))
+        parsed = load_yaml_file(path)
         _deep_update(config, parsed)
     return config
+
+
+def load_yaml_file(path: Path) -> Dict[str, Any]:
+    """Load the project's dependency-free YAML subset.
+
+    Nested mappings and JSON-compatible inline lists/dictionaries are
+    supported. The latter keeps ROI and class-map configuration structured
+    without adding PyYAML to the RK3588 runtime.
+    """
+
+    if not path.exists():
+        return {}
+    return _parse_simple_yaml(path.read_text(encoding="utf-8"))
 
 
 def project_path(value: str | Path) -> Path:
@@ -222,11 +239,17 @@ def _parse_scalar(value: str) -> Any:
         return False
     if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
         return value[1:-1]
-    if value.startswith("[") and value.endswith("]"):
-        inner = value[1:-1].strip()
-        if not inner:
-            return []
-        return [_parse_scalar(part.strip()) for part in inner.split(",")]
+    if (value.startswith("[") and value.endswith("]")) or (
+        value.startswith("{") and value.endswith("}")
+    ):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            if value.startswith("["):
+                inner = value[1:-1].strip()
+                if not inner:
+                    return []
+                return [_parse_scalar(part.strip()) for part in inner.split(",")]
     try:
         if "." in value:
             return float(value)

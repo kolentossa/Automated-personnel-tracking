@@ -115,6 +115,7 @@ class FaceMosaicProcessor:
         self._thread: Optional[threading.Thread] = None
         self._pending_frame: Optional[np.ndarray] = None
         self._latest_boxes: List[Box] = []
+        self._current_face_boxes: List[Box] = []
         self._latest_gray: Optional[np.ndarray] = None
         self._latest_at = 0.0
         self._latest_generation = 0
@@ -204,6 +205,7 @@ class FaceMosaicProcessor:
 
         with self._lock:
             self._fallback_regions = len(fallback_boxes)
+            self._current_face_boxes = list(faces)
             if expanded_faces:
                 self._mode = "face-tracked" if self.tracking_enabled else "face-detected"
             elif fallback_boxes:
@@ -211,6 +213,12 @@ class FaceMosaicProcessor:
             elif self.detector_available:
                 self._mode = "ready"
         return result
+
+    def face_boxes(self) -> List[Box]:
+        """Return current detected/optical-flow face boxes for spatial analysis."""
+
+        with self._lock:
+            return list(self._current_face_boxes)
 
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:

@@ -15,6 +15,9 @@ models/*.pth
 data/*.avi
 data/retinaface_test.jpg
 data/privacy_test*.jpg
+data/behavior_events/
+data/debug_frames/
+data/benchmark*.json
 logs/*.jsonl
 models/*.engine
 models/*.weights

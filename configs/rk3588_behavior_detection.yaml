@@ -1,0 +1,92 @@
+enabled: true
+camera_id: rk3588-camera-01
+
+source:
+  use_for_runtime: false
+  type: camera
+  camera_device: /dev/video11
+  rtsp_url: ""
+  video_file: ""
+
+models:
+  primary:
+    use_for_runtime: false
+    model_path: models/yolov8n.rknn
+    class_names: {"0": "person", "67": "cell phone"}
+    core_mask: "0_1_2"
+    expected_sha256: ff3a64e6fe180203128c8d42456b458d208d3a1e2217d63683af00d6194e82ea
+  behavior:
+    enabled: false
+    required: false
+    type: rknn-yolo
+    model_path: models/behavior_yolov8n.rknn
+    model_family: yolov8
+    input_size: 640
+    confidence_threshold: 0.30
+    nms_threshold: 0.45
+    class_names: ["person", "cell phone", "cigarette", "smoke", "flame", "lighter", "hand"]
+    class_filter: ["cigarette", "smoke", "flame", "lighter", "hand"]
+    core_mask: "2"
+    detect_every_n_frames: 3
+    expected_sha256: ""
+
+class_groups:
+  phone: ["cell phone", "phone", "mobile phone"]
+  cigarette: ["cigarette", "cigar"]
+  smoke: ["smoke"]
+  flame: ["flame", "fire"]
+  lighter: ["lighter"]
+  hand: ["hand", "left hand", "right hand"]
+
+association:
+  person_expansion_ratio: 0.12
+  stale_track_ms: 5000
+
+phone:
+  enabled: true
+  phone_call:
+    duration_ms: 1500
+    min_consecutive_frames: 8
+    confidence_threshold: 0.35
+    cooldown_ms: 10000
+    max_gap_frames: 3
+    max_face_distance_ratio: 0.90
+  phone_playing:
+    duration_ms: 2500
+    min_consecutive_frames: 12
+    confidence_threshold: 0.35
+    cooldown_ms: 10000
+    max_gap_frames: 3
+  unauthorized_photography:
+    duration_ms: 1200
+    min_consecutive_frames: 6
+    confidence_threshold: 0.35
+    cooldown_ms: 15000
+    max_gap_frames: 2
+    max_alignment_angle_deg: 35
+  prohibited_rois: [{"id":"critical-equipment","enabled":false,"normalized":true,"x1":0.65,"y1":0.15,"x2":0.95,"y2":0.85}]
+
+smoking:
+  enabled: true
+  duration_ms: 2000
+  min_consecutive_frames: 8
+  confidence_threshold: 0.35
+  cooldown_ms: 15000
+  max_gap_frames: 5
+  max_mouth_distance_ratio: 1.10
+  allow_persistent_cigarette: true
+  smoke_only_environment_event: false
+
+evidence:
+  snapshot_dir: data/behavior_events/snapshots
+  video_clip_dir: data/behavior_events/clips
+  event_log_path: logs/behavior_events.jsonl
+  save_unannotated_snapshot: true
+  save_annotated_snapshot: true
+  save_video_clip: false
+  save_debug_frames: false
+  jpeg_quality: 90
+  queue_size: 8
+
+logging:
+  level: INFO

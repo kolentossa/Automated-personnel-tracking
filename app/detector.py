@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -31,8 +32,14 @@ class PersonDetector:
         self.warning = ""
         self.last_profile: Dict[str, float] = _empty_profile()
         self._detector = self._create_detector()
+        self.output_labels = self._discover_output_labels()
 
     def detect(self, frame: Frame) -> List[Detection]:
+        return [item for item in self.detect_scene(frame) if int(item.class_id) == 0 or item.label == "person"]
+
+    def detect_scene(self, frame: Frame) -> List[Detection]:
+        """Return every configured semantic class from one inference pass."""
+
         started = time.monotonic()
         detections = self._detector.detect(frame)
         elapsed_ms = round((time.monotonic() - started) * 1000.0, 1)
@@ -45,7 +52,15 @@ class PersonDetector:
                 "inference_ms": elapsed_ms,
                 "postprocess_ms": 0.0,
             }
-        return [item for item in detections if int(item.class_id) == 0 or item.label == "person"]
+        return detections
+
+    def release(self) -> None:
+        release = getattr(self._detector, "release", None)
+        if callable(release):
+            release()
+
+    def supports_label(self, label: str) -> bool:
+        return str(label).strip().lower() in self.output_labels
 
     def _create_detector(self):
         min_area = int(self.config.get("motion_min_area") or 500)
@@ -54,10 +69,31 @@ class PersonDetector:
 
         path = project_path(self.model_path)
         if self._wants_rknn(path):
+            hash_error = self._validate_model_hash(path)
+            if hash_error:
+                return self._cpu_or_noop(min_area, hash_error)
             return self._create_rknn_or_fallback(path, min_area)
         if not path.exists():
             return self._motion_or_noop(min_area, f"Configured model not found: {path}")
         return self._create_cpu_detector(path, self.config, min_area)
+
+    def _validate_model_hash(self, path: Path) -> str:
+        expected = str(self.config.get("expected_sha256") or "").strip().lower()
+        if not expected or not path.exists():
+            return ""
+        actual = _sha256(path)
+        if actual == expected:
+            return ""
+        return f"Configured model SHA-256 mismatch: expected {expected}, got {actual}"
+
+    def _discover_output_labels(self) -> set[str]:
+        selected = getattr(self._detector, "selected_class_ids", None)
+        class_names = getattr(self._detector, "class_names", None)
+        if selected is not None and isinstance(class_names, dict):
+            return {str(class_names[class_id]).strip().lower() for class_id in selected if class_id in class_names}
+        if self.name == "no-op-person-detector":
+            return set()
+        return {"person"}
 
     def _wants_rknn(self, path: Path) -> bool:
         return self.detector_type in {"rknn-yolo", "rknn-yolov8", "rknn-yolov8n"} or path.suffix.lower() == ".rknn"
@@ -73,6 +109,8 @@ class PersonDetector:
                 confidence_threshold=float(self.config.get("confidence_threshold") or 0.35),
                 nms_threshold=float(self.config.get("nms_threshold") or 0.45),
                 class_filter=self.config.get("class_filter") or ["person"],
+                class_names=self.config.get("class_names"),
+                core_mask=self.config.get("core_mask") or "0_1_2",
             )
             self.name = detector.name
             self.npu_enabled = True
@@ -226,3 +264,11 @@ def _normalise_profile(profile: Dict[str, Any], elapsed_ms: float) -> Dict[str, 
 
 def _ms(seconds: float) -> float:
     return round(float(seconds) * 1000.0, 1)
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()

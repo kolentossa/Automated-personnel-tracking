@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import cv2
 
@@ -34,6 +35,7 @@ class CameraSource:
         self.target_fps = float(config.get("fps") or 0)
         self.retry_interval_sec = float(config.get("retry_interval_sec") or 3.0)
         self.video_file = str(config.get("video_file") or "data/sample.mp4")
+        self.rtsp_url = str(config.get("rtsp_url") or "")
         self.gstreamer_pipeline_template = str(
             config.get("gstreamer_pipeline")
             or "v4l2src device={device} ! video/x-raw,format=NV12,width={width},height={height} "
@@ -77,6 +79,8 @@ class CameraSource:
         self._last_open_attempt = time.monotonic()
         if self.source_type == "video":
             return self._open_video_file()
+        if self.source_type == "rtsp":
+            return self._open_rtsp()
         return self._open_camera()
 
     def release(self) -> None:
@@ -99,6 +103,28 @@ class CameraSource:
             self.status = "error"
             self.error = f"OpenCV could not open video file: {path}"
             return False
+        self._capture = capture
+        self.status = "online"
+        self.error = ""
+        return True
+
+    def _open_rtsp(self) -> bool:
+        self.selected_source = _redact_rtsp_url(self.rtsp_url)
+        self.selected_backend = "ffmpeg-rtsp"
+        if not self.rtsp_url.lower().startswith(("rtsp://", "rtsps://")):
+            self.status = "error"
+            self.error = "camera.rtsp_url must start with rtsp:// or rtsps://"
+            return False
+        capture = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
+        if not capture.isOpened():
+            capture.release()
+            capture = cv2.VideoCapture(self.rtsp_url)
+        if not capture.isOpened():
+            capture.release()
+            self.status = "error"
+            self.error = f"OpenCV could not open RTSP source: {self.selected_source}"
+            return False
+        capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         self._capture = capture
         self.status = "online"
         self.error = ""
@@ -238,3 +264,15 @@ def _natural_video_key(path: Path) -> tuple[int, str]:
     if match:
         return int(match.group(1)), name
     return 100000, name
+
+
+def _redact_rtsp_url(value: str) -> str:
+    try:
+        parts = urlsplit(value)
+        host = parts.hostname or ""
+        if parts.port:
+            host = f"{host}:{parts.port}"
+        netloc = f"***@{host}" if parts.username or parts.password else host
+        return urlunsplit((parts.scheme, netloc, parts.path, parts.query, ""))
+    except Exception:
+        return "rtsp://***"

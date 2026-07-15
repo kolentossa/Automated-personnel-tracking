@@ -3,14 +3,14 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>RK3588 Personnel Tracking</title>
+    <title>RK3588 Personnel and Behavior Monitoring</title>
     <link rel="stylesheet" href="/static/style.css" />
   </head>
   <body>
     <main class="shell">
       <header class="topbar">
         <div>
-          <h1>RK3588 Personnel Tracking</h1>
+          <h1>RK3588 Personnel and Behavior Monitoring</h1>
           <p id="service-state">Connecting</p>
         </div>
         <div class="status-pill" id="camera-pill">Offline</div>
@@ -33,6 +33,7 @@
             <article class="metric"><span>FPS</span><strong id="fps">0</strong></article>
             <article class="metric"><span>Total latency</span><strong><span id="total-latency-ms">0</span><small> ms</small></strong></article>
             <article class="metric"><span>Inference</span><strong><span id="inference-ms">0</span><small> ms</small></strong></article>
+            <article class="metric"><span>Behavior alerts</span><strong id="behavior-alerts">0</strong></article>
           </div>
 
           <dl class="details">
@@ -41,6 +42,9 @@
             <div><dt>Detector</dt><dd id="detector">-</dd></div>
             <div><dt>NPU</dt><dd id="npu-enabled">-</dd></div>
             <div><dt>Privacy</dt><dd id="privacy">ON</dd></div>
+            <div><dt>Behavior status</dt><dd id="behavior-status">-</dd></div>
+            <div><dt>Phone detector</dt><dd id="phone-detector">-</dd></div>
+            <div><dt>Smoking model</dt><dd id="smoking-detector">-</dd></div>
           </dl>
 
           <section class="counting-config" aria-label="Counting configuration">
@@ -62,6 +66,11 @@
           <section class="events-section">
             <h2>Recent crossing events</h2>
             <ol id="events"></ol>
+          </section>
+
+          <section class="events-section behavior-events-section">
+            <h2>Recent behavior alerts</h2>
+            <ol id="behavior-events"></ol>
           </section>
         </aside>
       </section>

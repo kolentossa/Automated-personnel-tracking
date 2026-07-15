@@ -1,4 +1,4 @@
-"""RKNN Lite YOLO person detector for RK3588 NPU inference."""
+"""RKNN Lite YOLO object detector for RK3588 NPU inference."""
 
 from __future__ import annotations
 
@@ -12,6 +12,20 @@ import numpy as np
 from vision.types import Detection, Frame
 
 
+COCO_CLASS_NAMES = (
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
+    "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog",
+    "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella",
+    "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball", "kite",
+    "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle",
+    "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich",
+    "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
+    "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote",
+    "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "book",
+    "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush",
+)
+
+
 class RKNNYoloDetector:
     """Run a YOLO RKNN model through rknn-toolkit-lite2 on RK3588.
 
@@ -20,7 +34,6 @@ class RKNNYoloDetector:
     without changing the pipeline contract.
     """
 
-    PERSON_CLASS_ID = 0
     MAX_CANDIDATES = 300
 
     def __init__(
@@ -32,6 +45,8 @@ class RKNNYoloDetector:
         confidence_threshold: float = 0.35,
         nms_threshold: float = 0.45,
         class_filter: Optional[Iterable[str]] = None,
+        class_names: Optional[Any] = None,
+        core_mask: Any = "0_1_2",
     ) -> None:
         try:
             from rknnlite.api import RKNNLite
@@ -43,7 +58,15 @@ class RKNNYoloDetector:
         self.input_size = int(input_size)
         self.confidence_threshold = float(confidence_threshold)
         self.nms_threshold = float(nms_threshold)
-        self.class_filter = {str(item).lower() for item in (class_filter or ["person"])}
+        self.class_names = _normalise_class_names(class_names)
+        self.class_filter = {str(item).strip().lower() for item in (class_filter or ["person"])}
+        self.selected_class_ids = {
+            class_id
+            for class_id, label in self.class_names.items()
+            if not self.class_filter or label.lower() in self.class_filter
+        }
+        if self.class_filter and not self.selected_class_ids:
+            raise ValueError(f"class_filter does not match class_names: {sorted(self.class_filter)}")
         self.last_profile: Dict[str, float] = _empty_profile()
         self.npu_enabled = False
         self.name = _detector_name(self.model_path, self.model_family)
@@ -53,9 +76,9 @@ class RKNNYoloDetector:
         if ret != 0:
             raise RuntimeError(f"RKNN load_rknn failed with code {ret}: {self.model_path}")
 
-        core_mask = getattr(RKNNLite, "NPU_CORE_0_1_2", None)
-        if core_mask is not None:
-            ret = self._rknn.init_runtime(core_mask=core_mask)
+        resolved_core_mask = _resolve_core_mask(RKNNLite, core_mask)
+        if resolved_core_mask is not None:
+            ret = self._rknn.init_runtime(core_mask=resolved_core_mask)
         else:
             ret = self._rknn.init_runtime()
         if ret != 0:
@@ -101,22 +124,24 @@ class RKNNYoloDetector:
         boxes_xywh: List[List[int]] = []
         boxes_xyxy: List[Tuple[float, float, float, float]] = []
         confidences: List[float] = []
+        class_ids: List[int] = []
 
         for row in rows:
             decoded = self._decode_row(row)
             if decoded is None:
                 continue
-            x1, y1, x2, y2, score = decoded
+            x1, y1, x2, y2, score, class_id = decoded
             x1, y1, x2, y2 = _scale_box_from_letterbox((x1, y1, x2, y2), ratio, pad, width, height)
             if x2 <= x1 or y2 <= y1:
                 continue
             boxes_xyxy.append((x1, y1, x2, y2))
             boxes_xywh.append([int(round(x1)), int(round(y1)), int(round(x2 - x1)), int(round(y2 - y1))])
             confidences.append(float(score))
+            class_ids.append(int(class_id))
 
-        keep = _nms(boxes_xywh, confidences, self.confidence_threshold, self.nms_threshold)
+        keep = _class_aware_nms(boxes_xywh, confidences, class_ids, self.confidence_threshold, self.nms_threshold)
         detections = [
-            Detection(boxes_xyxy[index], confidences[index], self.PERSON_CLASS_ID, "person")
+            Detection(boxes_xyxy[index], confidences[index], class_ids[index], self.class_names[class_ids[index]])
             for index in keep
         ]
         detections.sort(key=lambda item: item.confidence, reverse=True)
@@ -140,29 +165,36 @@ class RKNNYoloDetector:
         pair_per_branch = len(arrays) // branch_count
         branch_boxes: List[np.ndarray] = []
         branch_scores: List[np.ndarray] = []
+        branch_class_ids: List[np.ndarray] = []
         for branch_index in range(branch_count):
             box_tensor = arrays[pair_per_branch * branch_index]
             class_tensor = arrays[pair_per_branch * branch_index + 1]
             if box_tensor.shape[1] % 4 != 0 or class_tensor.shape[1] < 1:
                 return None
-            person_map = class_tensor[0, self.PERSON_CLASS_ID]
-            ys, xs = np.where(person_map >= self.confidence_threshold)
-            if ys.size == 0:
-                continue
-            scores = person_map[ys, xs].astype(np.float32, copy=False)
-            branch_boxes.append(_yolov8_box_process_selected(box_tensor[0], ys, xs, self.input_size))
-            branch_scores.append(scores)
+            for class_id in sorted(self.selected_class_ids):
+                if class_id >= class_tensor.shape[1]:
+                    continue
+                class_map = class_tensor[0, class_id]
+                ys, xs = np.where(class_map >= self.confidence_threshold)
+                if ys.size == 0:
+                    continue
+                scores = class_map[ys, xs].astype(np.float32, copy=False)
+                branch_boxes.append(_yolov8_box_process_selected(box_tensor[0], ys, xs, self.input_size))
+                branch_scores.append(scores)
+                branch_class_ids.append(np.full(scores.shape, class_id, dtype=np.int32))
 
         if not branch_boxes:
             return []
 
         boxes = np.concatenate(branch_boxes, axis=0)
         scores = np.concatenate(branch_scores, axis=0)
+        class_ids = np.concatenate(branch_class_ids, axis=0)
         if scores.size > self.MAX_CANDIDATES:
             top = np.argpartition(scores, -self.MAX_CANDIDATES)[-self.MAX_CANDIDATES :]
             order = top[np.argsort(scores[top])[::-1]]
             boxes = boxes[order]
             scores = scores[order]
+            class_ids = class_ids[order]
 
         height, width = int(frame_shape[0]), int(frame_shape[1])
         boxes_xyxy = _scale_boxes_from_letterbox(boxes, ratio, pad, width, height)
@@ -171,26 +203,34 @@ class RKNNYoloDetector:
             return []
         boxes_xyxy = boxes_xyxy[valid]
         scores = scores[valid]
+        class_ids = class_ids[valid]
 
-        keep = _nms_xyxy(boxes_xyxy, scores, self.nms_threshold)
-        detections = [
-            Detection(tuple(float(value) for value in boxes_xyxy[index]), float(scores[index]), self.PERSON_CLASS_ID, "person")
-            for index in keep
-        ]
+        keep: List[int] = []
+        for class_id in np.unique(class_ids):
+            indexes = np.where(class_ids == class_id)[0]
+            class_keep = _nms_xyxy(boxes_xyxy[indexes], scores[indexes], self.nms_threshold)
+            keep.extend(int(indexes[index]) for index in class_keep)
+        keep.sort(key=lambda index: float(scores[index]), reverse=True)
+        detections = [Detection(
+            tuple(float(value) for value in boxes_xyxy[index]),
+            float(scores[index]),
+            int(class_ids[index]),
+            self.class_names[int(class_ids[index])],
+        ) for index in keep]
         return detections
 
-    def _decode_row(self, row: np.ndarray) -> Optional[Tuple[float, float, float, float, float]]:
+    def _decode_row(self, row: np.ndarray) -> Optional[Tuple[float, float, float, float, float, int]]:
         values = np.asarray(row, dtype=np.float32).reshape(-1)
         if values.size < 6:
             return None
 
-        class_id = self.PERSON_CLASS_ID
+        class_id = 0
         score = 0.0
         xyxy_format = False
 
         if values.size <= 7:
             score = float(values[4])
-            class_id = int(round(float(values[5]))) if values.size >= 6 else self.PERSON_CLASS_ID
+            class_id = int(round(float(values[5]))) if values.size >= 6 else 0
             xyxy_format = True
         elif values.size >= 85 and self.model_family in {"yolov5", "yolov6"}:
             objectness = float(values[4])
@@ -207,9 +247,7 @@ class RKNNYoloDetector:
             class_id = int(np.argmax(class_scores))
             score = float(class_scores[class_id])
 
-        if class_id != self.PERSON_CLASS_ID or score < self.confidence_threshold:
-            return None
-        if self.class_filter and "person" not in self.class_filter:
+        if class_id not in self.selected_class_ids or score < self.confidence_threshold:
             return None
 
         coords = values[:4].astype(np.float32)
@@ -224,7 +262,7 @@ class RKNNYoloDetector:
             y1 = cy - bh / 2.0
             x2 = cx + bw / 2.0
             y2 = cy + bh / 2.0
-        return x1, y1, x2, y2, score
+        return x1, y1, x2, y2, score, class_id
 
 
 def _preprocess(frame: np.ndarray, input_size: int) -> Tuple[np.ndarray, float, Tuple[float, float]]:
@@ -395,6 +433,58 @@ def _nms(boxes: List[List[int]], confidences: List[float], score_threshold: floa
     if indexes is None or len(indexes) == 0:
         return []
     return [int(index) for index in np.asarray(indexes).reshape(-1)]
+
+
+def _class_aware_nms(
+    boxes: List[List[int]],
+    confidences: List[float],
+    class_ids: List[int],
+    score_threshold: float,
+    nms_threshold: float,
+) -> List[int]:
+    keep: List[int] = []
+    for class_id in sorted(set(class_ids)):
+        indexes = [index for index, value in enumerate(class_ids) if value == class_id]
+        selected = _nms(
+            [boxes[index] for index in indexes],
+            [confidences[index] for index in indexes],
+            score_threshold,
+            nms_threshold,
+        )
+        keep.extend(indexes[index] for index in selected)
+    keep.sort(key=lambda index: confidences[index], reverse=True)
+    return keep
+
+
+def _normalise_class_names(value: Optional[Any]) -> Dict[int, str]:
+    if value is None:
+        return {index: label for index, label in enumerate(COCO_CLASS_NAMES)}
+    if isinstance(value, dict):
+        result = {int(class_id): str(label).strip() for class_id, label in value.items()}
+    elif isinstance(value, (list, tuple)):
+        result = {index: str(label).strip() for index, label in enumerate(value)}
+    else:
+        raise TypeError("class_names must be a list or class-id mapping")
+    if not result or any(not label for label in result.values()):
+        raise ValueError("class_names must contain non-empty labels")
+    return result
+
+
+def _resolve_core_mask(rknn_lite_class: Any, value: Any) -> Optional[Any]:
+    text = str(value or "auto").strip().lower().replace("npu_core_", "")
+    if text in {"", "auto", "all"}:
+        text = "0_1_2"
+    aliases = {
+        "0": "NPU_CORE_0",
+        "1": "NPU_CORE_1",
+        "2": "NPU_CORE_2",
+        "0_1": "NPU_CORE_0_1",
+        "0_1_2": "NPU_CORE_0_1_2",
+    }
+    attribute = aliases.get(text)
+    if attribute is None:
+        raise ValueError(f"Unsupported RKNN core mask: {value}")
+    return getattr(rknn_lite_class, attribute, None)
 
 
 def _detector_name(model_path: Path, model_family: str) -> str:

@@ -11,11 +11,13 @@ from typing import Iterable, Optional
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.camera import CameraFrame, CameraSource
+from app.behavior import BehaviorEngine, BehaviorEventManager, load_behavior_config
+from app.behavior.detector import BehaviorObjectDetector
 from app.config import load_config, save_counting_config
 from app.detector import PersonDetector
 from app.privacy import FaceMosaicProcessor
@@ -55,12 +57,18 @@ def _wrap_text(value: str, size: int) -> list[str]:
 class TrackingRuntime:
     def __init__(self) -> None:
         self.config = load_config()
+        self.behavior_config = load_behavior_config()
         self.performance_config = self.config.get("performance", {})
         self.cpu_affinity, self.cpu_affinity_error = _apply_cpu_affinity(
             self.performance_config.get("cpu_affinity")
         )
-        self.camera = CameraSource(self.config["camera"])
-        detector_config = self.config.get("detector") or self.config.get("detection", {})
+        camera_config = dict(self.config["camera"])
+        _apply_behavior_source(camera_config, self.behavior_config.get("source", {}))
+        self.camera = CameraSource(camera_config)
+        detector_config = dict(self.config.get("detector") or self.config.get("detection", {}))
+        primary_override = self.behavior_config.get("models", {}).get("primary", {})
+        if bool(primary_override.get("use_for_runtime", False)):
+            detector_config.update({key: value for key, value in primary_override.items() if key != "use_for_runtime"})
         self.detector = PersonDetector(detector_config, fallback_config=self.config.get("detection", {}))
         self.tracker = PersonTracker(self.config["tracking"])
         counting_config = dict(self.config["counting"])
@@ -70,6 +78,16 @@ class TrackingRuntime:
         self.stats = StatsManager(counting_config)
         self.privacy_config = self.config["privacy"]
         self.privacy = FaceMosaicProcessor(self.privacy_config)
+        self.behavior_detector = BehaviorObjectDetector(
+            self.behavior_config.get("models", {}).get("behavior", {})
+        )
+        self.behavior = BehaviorEngine(self.behavior_config)
+        evidence_config = dict(self.behavior_config.get("evidence", {}))
+        evidence_config["logging_level"] = self.behavior_config.get("logging", {}).get("level", "INFO")
+        self.behavior_events = BehaviorEventManager(
+            evidence_config,
+            str(self.behavior_config.get("camera_id") or "rk3588-camera-01"),
+        )
         self.stream_config = self.config.get("stream", {})
         self.target_fps = float(self.performance_config.get("target_fps") or 30)
         self.detect_every_n_frames = max(1, int(self.performance_config.get("detect_every_n_frames") or 1))
@@ -86,6 +104,7 @@ class TrackingRuntime:
         self._latest_camera_frame_id = 0
         self._last_capture_ms = 0.0
         self._last_detections: list[Detection] = []
+        self._last_scene_detections: list[Detection] = []
         self._detector_has_run = False
         self._frame_index = 0
         self._fps = 0.0
@@ -106,6 +125,7 @@ class TrackingRuntime:
                 return
             self._stop_event.clear()
             self.privacy.start()
+            self.behavior_events.start()
             self._camera_thread = threading.Thread(target=self._camera_loop, name="rk3588-camera-capture", daemon=True)
             self._processing_thread = threading.Thread(target=self._processing_loop, name="rk3588-camera-processing", daemon=True)
             self._camera_thread.start()
@@ -120,6 +140,9 @@ class TrackingRuntime:
                 thread.join(timeout=5.0)
         self.privacy.stop()
         self.camera.release()
+        self.detector.release()
+        self.behavior_detector.release()
+        self.behavior_events.stop()
         self._update_runtime(
             fps=self._fps,
             timings=_blank_timings(),
@@ -135,7 +158,9 @@ class TrackingRuntime:
 
     def reset_stats(self) -> dict:
         self.stats.reset()
-        return self.stats.snapshot()
+        self.behavior.reset()
+        self.behavior_events.reset()
+        return self.stats_snapshot()
 
     def get_counting_config(self) -> dict:
         return self.stats.counting_config()
@@ -160,11 +185,14 @@ class TrackingRuntime:
         stats = self.stats_snapshot()
         privacy_required = bool(self.privacy_config.get("face_mosaic_enabled", True))
         privacy_ok = not privacy_required or bool(stats.get("face_detector_available"))
+        behavior_required = bool(stats.get("behavior_model_enabled")) and bool(stats.get("behavior_model_required"))
+        behavior_ok = not behavior_required or bool(stats.get("behavior_model_available"))
         ok = (
             bool(stats.get("running"))
             and stats.get("camera_status") == "online"
             and not stats.get("last_error")
             and privacy_ok
+            and behavior_ok
         )
         data = {
             "status": "ok" if ok else "error",
@@ -181,6 +209,12 @@ class TrackingRuntime:
         for key in TIMING_KEYS:
             data[key] = stats.get(key, 0.0)
         data.update(self.privacy.snapshot())
+        data.update(self.behavior.snapshot())
+        data.update(self.behavior_detector.snapshot())
+        data.update(self.behavior_events.snapshot())
+        data["phone_detection_available"] = self._phone_detection_available()
+        data["smoking_detection_available"] = bool(self.behavior_detector.available)
+        data["behavior_status"] = self._behavior_status()
         data["cpu_affinity"] = self.cpu_affinity
         data["cpu_affinity_error"] = self.cpu_affinity_error
         return data
@@ -188,9 +222,29 @@ class TrackingRuntime:
     def stats_snapshot(self) -> dict:
         data = self.stats.snapshot()
         data.update(self.privacy.snapshot())
+        data.update(self.behavior.snapshot())
+        data.update(self.behavior_detector.snapshot())
+        data.update(self.behavior_events.snapshot())
+        data["phone_detection_available"] = self._phone_detection_available()
+        data["smoking_detection_available"] = bool(self.behavior_detector.available)
+        data["behavior_status"] = self._behavior_status()
         data["cpu_affinity"] = self.cpu_affinity
         data["cpu_affinity_error"] = self.cpu_affinity_error
         return data
+
+    def recent_behavior_events(self, limit: int = 50) -> dict:
+        return {"events": self.behavior_events.recent(limit)}
+
+    def _phone_detection_available(self) -> bool:
+        return any(self.detector.supports_label(label) for label in ("cell phone", "phone", "mobile phone"))
+
+    def _behavior_status(self) -> str:
+        if not self.behavior.enabled:
+            return "disabled"
+        model = self.behavior_detector
+        if self.behavior.smoking.enabled and not model.available:
+            return "error" if model.required else "degraded"
+        return "ready"
 
     def stream_interval(self) -> float:
         return 1.0 / max(1.0, min(60.0, self.target_fps))
@@ -234,13 +288,22 @@ class TrackingRuntime:
         detect_this_frame = (self._frame_index % self.detect_every_n_frames) == 0 or not self._detector_has_run
 
         if detect_this_frame:
-            detections = self.detector.detect(frame)
+            scene_detections = self.detector.detect_scene(frame)
+            detections = [
+                item for item in scene_detections if int(item.class_id) == 0 or item.label == "person"
+            ]
             detector_profile = dict(self.detector.last_profile)
             self._last_detections = detections
+            self._last_scene_detections = scene_detections
             self._detector_has_run = True
         else:
             detections = list(self._last_detections)
+            scene_detections = list(self._last_scene_detections)
             detector_profile = {"preprocess_ms": 0.0, "inference_ms": 0.0, "postprocess_ms": 0.0}
+
+        behavior_detections = self.behavior_detector.detect(frame, self._frame_index)
+        behavior_detector_profile = dict(self.behavior_detector.last_profile)
+        all_scene_detections = scene_detections + behavior_detections
 
         tracking_started = time.monotonic()
         tracks = self.tracker.update(detections)
@@ -251,9 +314,20 @@ class TrackingRuntime:
         display = self._prepare_display_frame(frame, tracks, detections)
         privacy_ms = _ms(time.monotonic() - privacy_started)
 
+        behavior_result = self.behavior.update(
+            tracks,
+            all_scene_detections,
+            self.privacy.face_boxes(),
+            frame.shape[:2],
+        )
+        event_started = time.monotonic()
+        for trigger in behavior_result.triggers:
+            self.behavior_events.emit(trigger, display)
+        event_output_ms = _ms(time.monotonic() - event_started)
+
         draw_started = time.monotonic()
         line = self.stats.current_line()
-        self._draw_overlay(display, tracks, line)
+        self._draw_overlay(display, tracks, line, all_scene_detections)
         draw_ms = _ms(time.monotonic() - draw_started)
 
         encode_started = time.monotonic()
@@ -275,6 +349,11 @@ class TrackingRuntime:
             "preprocess_ms": detector_profile.get("preprocess_ms", 0.0),
             "inference_ms": detector_profile.get("inference_ms", 0.0),
             "postprocess_ms": detector_profile.get("postprocess_ms", 0.0),
+            "behavior_preprocess_ms": behavior_detector_profile.get("preprocess_ms", 0.0),
+            "behavior_inference_ms": behavior_detector_profile.get("inference_ms", 0.0),
+            "behavior_postprocess_ms": behavior_detector_profile.get("postprocess_ms", 0.0),
+            "behavior_analysis_ms": behavior_result.analysis_ms,
+            "event_output_ms": event_output_ms,
             "tracking_ms": tracking_ms,
             "privacy_ms": privacy_ms,
             "draw_ms": draw_ms,
@@ -309,7 +388,13 @@ class TrackingRuntime:
         person_boxes = track_boxes or detection_boxes
         return self.privacy.process(frame, person_boxes)
 
-    def _draw_overlay(self, frame: np.ndarray, tracks: Iterable[TrackedPerson], line: Optional[Line]) -> None:
+    def _draw_overlay(
+        self,
+        frame: np.ndarray,
+        tracks: Iterable[TrackedPerson],
+        line: Optional[Line],
+        scene_detections: Iterable[Detection] = (),
+    ) -> None:
         if line is not None:
             (x1, y1), (x2, y2) = line
             cv2.line(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 215, 255), 2)
@@ -318,6 +403,31 @@ class TrackingRuntime:
             cv2.rectangle(frame, (bx1, by1), (bx2, by2), (42, 166, 85), 2)
             label = f"ID {track.track_id} {track.confidence:.2f}"
             cv2.putText(frame, label, (bx1, max(24, by1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (42, 166, 85), 2)
+        colors = {
+            "cell phone": (0, 165, 255),
+            "phone": (0, 165, 255),
+            "cigarette": (46, 46, 220),
+            "smoke": (170, 170, 170),
+            "flame": (0, 90, 255),
+            "lighter": (160, 80, 190),
+            "hand": (190, 150, 30),
+        }
+        for detection in scene_detections:
+            label = str(detection.label).strip().lower()
+            if label == "person" or label not in colors:
+                continue
+            bx1, by1, bx2, by2 = [int(value) for value in detection.bbox]
+            color = colors[label]
+            cv2.rectangle(frame, (bx1, by1), (bx2, by2), color, 2)
+            cv2.putText(
+                frame,
+                f"{label} {detection.confidence:.2f}",
+                (bx1, max(18, by1 - 5)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.46,
+                color,
+                2,
+            )
 
     def _publish_error(self, message: str) -> None:
         with self._lock:
@@ -377,6 +487,20 @@ def _ms(seconds: float) -> float:
     return round(float(seconds) * 1000.0, 1)
 
 
+def _apply_behavior_source(camera_config: dict, source_config: dict) -> None:
+    """Apply source fields from the unified behavior config to CameraSource."""
+
+    if not bool(source_config.get("use_for_runtime", False)):
+        return
+    source_type = str(source_config.get("type") or "").strip()
+    if source_type:
+        camera_config["source_type"] = source_type
+    for key in ("camera_device", "rtsp_url", "video_file"):
+        value = source_config.get(key)
+        if value not in (None, ""):
+            camera_config[key] = value
+
+
 def _apply_cpu_affinity(value) -> tuple[list[int], str]:
     if not hasattr(os, "sched_setaffinity"):
         return [], "CPU affinity is not supported on this platform"
@@ -414,7 +538,7 @@ async def lifespan(_: FastAPI):
         runtime.stop()
 
 
-app = FastAPI(title="RK3588 Personnel Tracking", version="0.3.1", lifespan=lifespan)
+app = FastAPI(title="RK3588 Personnel Tracking", version="0.4.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC_ROOT)), name="static")
 
 
@@ -441,6 +565,11 @@ def api_health():
 @app.post("/api/reset-stats")
 def api_reset_stats():
     return JSONResponse(runtime.reset_stats())
+
+
+@app.get("/api/events")
+def api_behavior_events(limit: int = Query(default=50, ge=1, le=200)):
+    return JSONResponse(runtime.recent_behavior_events(limit))
 
 
 @app.get("/api/config/counting")
