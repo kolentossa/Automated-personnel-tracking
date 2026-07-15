@@ -12,25 +12,39 @@ The optimized camera service is deployed on the RK3588 at:
 http://192.168.1.213:8001
 ```
 
-It reads `/dev/video11`, uses YOLOv8n RKNN on the NPU, tracks anonymous person
-IDs, performs line-crossing counts, and applies RetinaFace plus optical-flow
-face mosaic before Web streaming. The legacy service on port `8000` has been
-retired and should remain stopped.
+It reads `/dev/video11`, runs YOLOv8n person/phone detection and an INT8
+DAMO-YOLO cigarette detector on the RK3588 NPU, tracks anonymous person IDs,
+performs line-crossing and temporal behavior analysis, and applies RetinaFace
+plus optical-flow face mosaic before Web streaming or evidence persistence.
+The legacy service on port `8000` has been retired and should remain stopped.
 
 Current measured operating point:
 
 ```text
 camera: /dev/video11
-fps: approximately 30
-rolling application latency: approximately 12-16 ms
+steady Web FPS: approximately 27-30
+rolling application latency: approximately 23-32 ms
 detector: rknn-yolov8n
 npu_enabled: true
 face_detector: retinaface-mobile320-onnx
+behavior_detector: rknn-damoyolo-cigarette-int8
+smoking_detection_available: true
 ```
 
-The service currently runs as a project-local background process. No systemd
-unit or boot-time service has been installed, so it must be started again after
-the board reboots.
+The behavior-enabled 300-frame sequential benchmark measured 26.43 FPS,
+37.26 ms mean latency, 33.41 ms P50, and 92.79 ms P95. See
+`docs/rk3588_behavior_benchmark_results.md` for stage timings and measurement
+definitions.
+
+The final 30-minute supervised Web stability run measured 27.80 FPS average,
+32.3 ms P95 application latency, zero API/camera/process failures, and stable
+memory (RSS changed by -11.23 MB with a -0.812 MB/hour fitted slope). A
+low-frequency GC and glibc trim maintenance point prevents native buffers from
+accumulating when both RKNN models run in one process.
+
+The service runs under a project-local restart supervisor. No systemd unit or
+boot-time service is installed, so run
+`./scripts/manage_behavior_service.sh start` after a board reboot.
 
 ## Architecture
 
@@ -244,12 +258,16 @@ cd ~/projects/person-tracking
 ./scripts/run_dev.sh
 ```
 
-For the current project-local background deployment:
+For the current project-local supervised deployment:
 
 ```bash
-mkdir -p logs
-nohup ./scripts/run_dev.sh > logs/uvicorn-8001-production.log 2>&1 &
+./scripts/manage_behavior_service.sh start
+./scripts/manage_behavior_service.sh status
 ```
+
+Use `restart` after a configuration or code update and `stop` for a graceful
+shutdown. The supervisor restarts a failed Uvicorn child after three seconds;
+its PID is stored under `run/` and logs stay under `logs/`.
 
 Open the dashboard from another LAN device by replacing the address with the
 board IP:
@@ -432,15 +450,30 @@ curl -X POST http://127.0.0.1:8001/api/config/counting \
 
 The feature branch `feature/rk3588-phone-smoking-detection` adds multi-class
 RKNN output, phone-to-person association, phone-call/phone-playing/restricted
-photography state machines, a pluggable smoking detector, asynchronous
-privacy-safe evidence, `/api/events`, RTSP input, and a board benchmark.
+photography state machines, real cigarette evidence, asynchronous privacy-safe
+evidence, `/api/events`, RTSP input, and target-board benchmarks.
 
 The existing COCO YOLOv8n model supplies `person` and `cell phone` from one NPU
-inference. Real cigarette, smoke, flame, lighter, and hand inference requires a
-separate custom `models/behavior_yolov8n.rknn`; that weight is not currently in
-the repository or board model set. Missing optional weights are reported as a
-degraded behavior status and never replaced with fabricated or motion-based
-detections.
+inference. A separate Apache-2.0 ModelScope DAMO-YOLO checkpoint supplies real
+`cigarette` output from
+`models/behavior_damoyolo_cigarette_int8.rknn`. It is SHA-verified, executes
+every fifth frame, and is kept out of Git with the other model binaries. The
+tracked manifest records its source, fixed revision, license, class order,
+preprocessing contract, conversion toolchain, and hashes.
+
+Production smoking alerts require the cigarette to be assigned to a person and
+near that person's detected or estimated mouth (or an associated hand) for the
+configured duration. Smoke, flame, and lighter labels are auxiliary only and
+cannot independently classify a person as smoking. A missing or invalid
+required behavior model produces an explicit health error; it is never replaced
+with fabricated or motion-based detections.
+
+Model selection, conversion, and validation details:
+
+- `docs/behavior_model_selection.md`
+- `docs/behavior_model_build_environment.md`
+- `models/behavior_model_manifest.json`
+- `artifacts/behavior_model_validation.json`
 
 Configuration, model conversion, event JSON, decision limits, tests, and
 performance instructions are documented in:

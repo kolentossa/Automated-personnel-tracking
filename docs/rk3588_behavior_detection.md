@@ -9,8 +9,9 @@ person-tracking service. It supports these unified event types:
 - `phone_playing`: a phone remains inside the upper body and below the face.
 - `unauthorized_photography`: a raised phone is geometrically aligned with a
   configured prohibited ROI.
-- `smoking`: cigarette, hand-to-mouth, ignition, and smoke evidence is fused
-  and associated with one tracked person.
+- `smoking`: a real cigarette or direct-smoking model output is associated
+  with one tracked person and sustained near the mouth; ignition and smoke
+  can only strengthen that direct evidence.
 
 No event is emitted from a single detection. Every event uses a configurable
 duration, minimum evidence-frame count, confidence threshold, tolerated gap,
@@ -26,7 +27,7 @@ The board currently has:
 | --- | --- | --- |
 | `models/yolov8n.rknn` | COCO person and cell-phone detection | Present and NPU tested |
 | `models/RetinaFace_mobile320.onnx` | Face detection for privacy and geometry | Present and CPU tested |
-| `models/behavior_yolov8n.rknn` | Cigarette, smoke, flame, lighter, and hand detection | Not present |
+| `models/behavior_damoyolo_cigarette_int8.rknn` | Direct cigarette evidence | Present, SHA-verified, and NPU tested |
 
 The existing YOLOv8n model SHA-256 is:
 
@@ -34,11 +35,19 @@ The existing YOLOv8n model SHA-256 is:
 ff3a64e6fe180203128c8d42456b458d208d3a1e2217d63683af00d6194e82ea
 ```
 
-Phone behavior can use the existing COCO model because the NPU postprocessor
-now returns both `person` and `cell phone` from one inference. Smoking
-inference remains unavailable until a properly licensed custom model is
-converted and installed. The association, evidence fusion, state machine,
-event output, tests, and RKNN interface do not fabricate missing detections.
+Phone behavior uses the existing COCO model because the NPU postprocessor
+returns both `person` and `cell phone` from one inference. Smoking uses the
+Apache-2.0 ModelScope DAMO-YOLO cigarette checkpoint converted to an INT8 RKNN.
+The deployed behavior model SHA-256 is:
+
+```text
+d04c43a3a695c9985fbd03db1e0a2956763374fd686d949b8cd96cabdc7c5941
+```
+
+Its strict output contract is two decoded tensors, scores `[1,8400,2]` and
+boxes `[1,8400,4]`; score channel 0 is `cigarette` and channel 1 is unused.
+Details and measured candidate comparisons are in
+`docs/behavior_model_selection.md` and `models/behavior_model_manifest.json`.
 
 ## Data Flow
 
@@ -46,7 +55,7 @@ event output, tests, and RKNN interface do not fabricate missing detections.
 V4L2/GStreamer, RTSP, or video file
   -> latest-frame camera thread
   -> YOLOv8n RKNN (person + cell phone)
-  -> optional custom behavior RKNN
+  -> DAMO-YOLO cigarette INT8 RKNN every fifth frame
   -> person IoU tracking
   -> target-to-track association
   -> RetinaFace and optical-flow face boxes
@@ -60,6 +69,12 @@ The auxiliary model supports an independent frame interval. Its last result is
 reused between inference frames, while the main camera thread still retains
 only the newest frame. Disk and callback work runs on `behavior-event-writer`,
 outside the frame-processing thread.
+
+With both RKNN instances active, their Python/native wrappers create cyclic
+objects that default GC can retain for long bursts. Production config runs
+`gc.collect()` followed by glibc `malloc_trim(0)` every 300 processed frames.
+The project-local supervisor also sets `MALLOC_ARENA_MAX=2`; no system setting
+is changed. Health and stats expose GC/trim counts and errors.
 
 ## Decision Logic
 
@@ -88,15 +103,18 @@ proof that a photo was captured.
 
 ### Smoking
 
-Smoking evidence is assigned to a specific track. Cigarette persistence,
-cigarette near mouth, hand near mouth and cigarette, nearby lighter/flame, and
-nearby smoke contribute to confidence. Smoke without a cigarette or correlated
-human action does not produce `smoking`. This prevents ordinary steam, fog, or
-distant light from directly classifying a person as smoking.
+Smoking evidence is assigned to a specific track. A cigarette must be near the
+detected or estimated mouth region, near an associated hand, or come from a
+direct `smoking` model class. Merely persisting elsewhere in a person box is
+disabled in production. Nearby lighter/flame and smoke can raise confidence
+only after direct evidence exists. They cannot independently produce a person
+`smoking` event. This reduces false alerts from steam, fog, distant lights, and
+the model's known lighter false positive.
 
 Small cigarette detections can disappear briefly without ending a candidate.
-The allowed gap is controlled by `smoking.max_gap_frames`. A custom model is
-required for real cigarette/smoke/flame inference.
+The allowed gap is controlled by `smoking.max_gap_frames`. A latched event must
+remain absent for `smoking.rearm_absence_ms` before the same track can emit a
+new event, so a brief detector gap does not duplicate a continuous episode.
 
 ## Configuration
 
@@ -110,6 +128,7 @@ The feature config is `configs/rk3588_behavior_detection.yaml`. It includes:
 - per-event duration, evidence frames, confidence, gap, and cooldown.
 - inline JSON ROI definitions with normalized or pixel coordinates.
 - evidence snapshot, clip, log, debug-frame, JPEG, and queue settings.
+- latest-frame queue and low-frequency memory maintenance interval.
 - logging level.
 
 Example enabled ROI:
@@ -119,18 +138,23 @@ phone:
   prohibited_rois: [{"id":"critical-equipment","enabled":true,"normalized":true,"x1":0.65,"y1":0.15,"x2":0.95,"y2":0.85}]
 ```
 
-Example custom behavior model activation:
+Deployed behavior model configuration:
 
 ```yaml
 models:
   behavior:
     enabled: true
     required: true
-    model_path: models/behavior_yolov8n.rknn
-    class_names: ["person", "cell phone", "cigarette", "smoke", "flame", "lighter", "hand"]
-    class_filter: ["cigarette", "smoke", "flame", "lighter", "hand"]
-    core_mask: "2"
-    expected_sha256: "PUT_VERIFIED_SHA256_HERE"
+    model_path: models/behavior_damoyolo_cigarette_int8.rknn
+    model_family: damoyolo
+    input_size: 640
+    confidence_threshold: 0.35
+    nms_threshold: 0.70
+    class_names: {"0": "cigarette", "1": "__unused__"}
+    class_filter: ["cigarette"]
+    core_mask: "0_1_2"
+    detect_every_n_frames: 5
+    expected_sha256: d04c43a3a695c9985fbd03db1e0a2956763374fd686d949b8cd96cabdc7c5941
 ```
 
 `class_names` must exactly match the training dataset order. A mismatched order
@@ -163,35 +187,34 @@ RTSP credentials are used only to open the stream. Status APIs redact the user
 and password from the displayed URL. Do not commit a real RTSP URL containing
 credentials.
 
-## Model Preparation on x86 Linux
+## Reproducing the RKNN Model
 
-Use a model whose license permits the intended deployment. Train or obtain an
-ONNX detector with the exact classes configured under `class_names`. Do not
-convert on the RK3588.
+The selected original checkpoint, static ONNX, calibration list, conversion
+environment, hashes, and consistency measurements are documented in
+`docs/behavior_model_build_environment.md`. Conversion used the project-local
+Toolkit2 2.3.0 environment on the RK3588; it did not alter system Python.
 
-Install the Rockchip Toolkit2 version compatible with the board runtime in an
-x86 Linux virtual environment, then run:
+Build the INT8 artifact with:
 
 ```bash
 python scripts/convert_behavior_onnx_to_rknn.py \
-  --onnx artifacts/behavior_yolov8n.onnx \
-  --dataset artifacts/calibration.txt \
-  --output models/behavior_yolov8n.rknn
+  --onnx damo_cigarette_640_static_opset12.onnx \
+  --dataset damo_cigarette_300.txt \
+  --output models/behavior_damoyolo_cigarette_int8.rknn \
+  --model-family damoyolo --input-size 640 --target rk3588
 ```
 
-The calibration file contains one representative image path per line. The
-script prints SHA-256 after conversion. Put that value in
-`models.behavior.expected_sha256`.
-
-The postprocessor accepts the Rockchip model-zoo YOLOv8 multi-head layout and
-common decoded YOLO rows. Validate output tensor layout, quantization, input
-color order, and class mapping with representative images before deployment.
+The 300-image calibration list contains 220 CigDet positives, 73 COCO
+negatives, and 7 curated negatives. The DAMO postprocessor validates the exact
+tensor count, dimensions, class-map width, and finite outputs, then performs
+class-aware NMS. A mismatch is a hard inference error rather than an empty
+detection result.
 
 Copy and verify the model without adding it to Git:
 
 ```bash
-scp models/behavior_yolov8n.rknn cat@RK3588_IP:/home/cat/projects/person-tracking/models/
-ssh cat@RK3588_IP 'cd ~/projects/person-tracking && sha256sum models/behavior_yolov8n.rknn'
+scp models/behavior_damoyolo_cigarette_int8.rknn cat@RK3588_IP:/home/cat/projects/person-tracking/models/
+ssh cat@RK3588_IP 'cd ~/projects/person-tracking && sha256sum models/behavior_damoyolo_cigarette_int8.rknn'
 ```
 
 All `.rknn`, `.onnx`, `.pt`, and related model files remain ignored.
@@ -202,7 +225,7 @@ All `.rknn`, `.onnx`, `.pt`, and related model files remain ignored.
 cd /home/cat/projects/person-tracking
 source .venv/bin/activate
 python -m unittest discover -s tests -v
-uvicorn app.main:app --host 0.0.0.0 --port 8001
+./scripts/manage_behavior_service.sh start
 ```
 
 Useful endpoints:
@@ -216,10 +239,12 @@ GET  /video
 ```
 
 `/api/health` reports `phone_detection_available`,
-`smoking_detection_available`, `behavior_status`, auxiliary model status, and
-behavior timing fields. `behavior_status=degraded` means phone detection is
-usable but an enabled optional behavior model is missing. A missing required
-model makes behavior health an error without crashing the camera service.
+`smoking_detection_available`, `behavior_model_loaded`, `behavior_status`,
+auxiliary-model NPU status, and behavior timing fields. Production health must
+report `status=ok`, `camera_status=online`, `npu_enabled=true`,
+`phone_detection_available=true`, `smoking_detection_available=true`, and
+`behavior_model_loaded=true`. A missing or invalid required model is an
+explicit health error; it never silently falls back to mock or motion output.
 
 ## Event JSON
 
@@ -265,11 +290,12 @@ and reported in stats without stopping camera inference.
 python -m unittest discover -s tests -v
 ```
 
-Tests use deterministic mock detections. They verify state-machine logic and do
-not claim model accuracy. Covered cases include short phone use, all three phone
-events, smoking evidence fusion, smoke-only rejection, deduplication, cooldown,
-track cleanup, evidence writes, unwritable paths, missing models, missing video,
-and invalid/redacted RTSP configuration.
+Tests use deterministic detections for state-machine behavior; model accuracy
+is measured separately on CigDet. Covered cases include all three phone events,
+cigarette association and mouth proximity, direct smoking classes, smoke and
+ignition-only rejection, distant-cigarette rejection, deduplication, track
+cleanup, strict RKNN shapes/classes, evidence writes, missing models, camera
+reconnect, missing video, and invalid/redacted RTSP configuration.
 
 ## Benchmark
 
@@ -278,6 +304,10 @@ Run on the RK3588 with the camera free:
 ```bash
 python scripts/benchmark_behavior_pipeline.py --frames 300 \
   --json-output data/benchmark-behavior-rk3588.json
+
+python scripts/monitor_behavior_stability.py \
+  --duration-seconds 1800 --interval-seconds 10 \
+  --output data/stability-behavior-rk3588-final.json
 ```
 
 The result records input resolution, average FPS, average and P95 end-to-end
@@ -286,13 +316,21 @@ load when the board exposes a readable devfreq load node. A local video can be
 used with `--video`. Do not quote performance until this command has run on the
 target configuration.
 
+The stability monitor also fails on API/camera/process errors, worker restarts,
+or positive RSS growth/slope above its configured limits. Use
+`scripts/profile_native_memory.py` to isolate capture, primary RKNN, behavior
+RKNN, and privacy paths if memory regresses.
+
 ## Known Limits and Next Steps
 
 - COCO phone detections can miss small, occluded, or motion-blurred phones.
 - Face/head geometry is not full pose, hand-keypoint, eye-gaze, or action
   recognition.
 - The photography rule cannot prove lens direction or that an image was saved.
-- Real smoking inference requires the absent custom behavior RKNN model.
+- The deployed model detects cigarettes, not smoke, flame, lighter, hand pose,
+  or the full smoking action. The event relies on person/face geometry and time.
+- CigDet AP50 is 0.7763 after INT8 conversion. The curated lighter and steam
+  negatives produced false cigarette boxes, so mouth association is required.
 - Smoke appearance varies strongly across ventilation, lighting, steam, and
   camera exposure. Site-specific validation and likely fine tuning are needed.
 - Configure ROIs per camera and validate perspective before enabling alerts.
