@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .env
 logs/
+run/
 data/*.mp4
 models/*.onnx
 models/*.rknn
@@ -18,6 +19,8 @@ data/privacy_test*.jpg
 data/behavior_events/
 data/debug_frames/
 data/benchmark*.json
+data/stability*.json
+data/native-memory*.json
 logs/*.jsonl
 models/*.engine
 models/*.weights
