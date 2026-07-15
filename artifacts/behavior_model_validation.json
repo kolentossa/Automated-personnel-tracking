@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "validation_date": "2026-07-15",
+  "selected_model": "modelscope-damo-yolo-s-cigarette",
+  "candidate_comparison": {
+    "modelscope_damo": {
+      "revision": "v1.1.0/b757d03ab58d9c30fe1e59b6af6d19431381d5ce",
+      "cigdet_test_images": 111,
+      "ap50": 0.8118,
+      "threshold_0_35": {"tp": 93, "fp": 48, "fn": 18, "precision": 0.6596, "recall": 0.8378, "f1": 0.7381},
+      "cpu_inference_ms_mean": 424.28
+    },
+    "imvansh_yolov8n_smoking": {
+      "revision": "a51a53f74c4e0c8439e6f9ecdb683a435c3388eb",
+      "cigdet_test_images": 111,
+      "ap50": 0.5872,
+      "threshold_0_35": {"tp": 67, "fp": 48, "fn": 44, "precision": 0.5826, "recall": 0.6036, "f1": 0.5929},
+      "cpu_inference_ms_mean": 85.69
+    }
+  },
+  "pytorch_vs_onnx": {
+    "images": 23,
+    "matched_boxes": 29,
+    "unmatched_pytorch": 0,
+    "unmatched_onnx": 0,
+    "mean_iou": 0.9999992601,
+    "minimum_iou": 0.9999962449,
+    "mean_confidence_difference": 0.0000001798,
+    "maximum_confidence_difference": 0.0000005662,
+    "raw_tensor_max_abs_difference": 0.0016479492
+  },
+  "onnx_fp_int8_cigdet": {
+    "images": 111,
+    "onnx_ap50": 0.806662,
+    "fp_rknn": {
+      "ap50": 0.808908,
+      "mean_inference_ms": 59.432,
+      "p95_inference_ms": 72.04,
+      "matched_boxes": 141,
+      "mean_iou_vs_onnx": 0.994482,
+      "mean_confidence_difference": 0.000331
+    },
+    "int8_rknn": {
+      "ap50": 0.776251,
+      "ap50_drop": 0.030411,
+      "mean_inference_ms": 26.4,
+      "p95_inference_ms": 26.811,
+      "matched_boxes": 134,
+      "onnx_unmatched": 7,
+      "int8_extra": 12,
+      "mean_iou_vs_onnx": 0.91389,
+      "minimum_iou_vs_onnx": 0.686444,
+      "mean_confidence_difference": 0.013495,
+      "maximum_confidence_difference": 0.114285,
+      "small_target_recall": 0.764706
+    },
+    "acceptance_passed": true
+  },
+  "curated_negative_rknn": {
+    "images": 11,
+    "images_without_detections": 9,
+    "false_detections": [
+      {"image": "lighter.jpg", "class": "cigarette", "confidence": 0.601474},
+      {"image": "steam.jpg", "class": "cigarette", "confidence": 0.436156}
+    ],
+    "safety_note": "Neither standalone detection can emit a person smoking event without person-track association and temporal evidence."
+  },
+  "rk3588_live_chain": {
+    "source": "/dev/video11",
+    "behavior_detector": "rknn-damoyolo-cigarette-int8",
+    "npu_enabled": true,
+    "event_id": "8d5cc406-cf57-4c97-9a22-e0cbe006b5d7",
+    "track_id": 59,
+    "class": "cigarette",
+    "confidence": 0.3516,
+    "duration_ms": 2081,
+    "evidence": ["cigarette_associated_with_person", "cigarette_near_mouth"],
+    "api": "/api/events",
+    "snapshot": "data/behavior_events/snapshots/20260715T091532.633656+0000_smoking_track-59_8d5cc406_evidence.jpg",
+    "annotated_snapshot": "data/behavior_events/snapshots/20260715T091532.633656+0000_smoking_track-59_8d5cc406_annotated.jpg",
+    "privacy_review": "Face mosaic was visually verified in the persisted evidence; no unmasked frame was saved by the event writer."
+  }
+}

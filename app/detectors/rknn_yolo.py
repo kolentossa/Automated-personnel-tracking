@@ -24,6 +24,7 @@ COCO_CLASS_NAMES = (
     "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "book",
     "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush",
 )
+DAMO_FAMILIES = {"damoyolo", "damo-yolo", "damo_yolo"}
 
 
 class RKNNYoloDetector:
@@ -87,7 +88,11 @@ class RKNNYoloDetector:
 
     def detect(self, frame: Frame) -> List[Detection]:
         t0 = time.monotonic()
-        input_image, ratio, pad = _preprocess(frame, self.input_size)
+        if self.model_family in DAMO_FAMILIES:
+            input_image = _preprocess_damoyolo(frame, self.input_size)
+            ratio, pad = 1.0, (0.0, 0.0)
+        else:
+            input_image, ratio, pad = _preprocess(frame, self.input_size)
         t1 = time.monotonic()
         outputs = self._rknn.inference(inputs=[input_image])
         t2 = time.monotonic()
@@ -115,6 +120,8 @@ class RKNNYoloDetector:
         ratio: float,
         pad: Tuple[float, float],
     ) -> List[Detection]:
+        if self.model_family in DAMO_FAMILIES:
+            return self._postprocess_damoyolo(outputs, frame_shape)
         model_zoo_detections = self._postprocess_yolov8_heads(outputs, frame_shape, ratio, pad)
         if model_zoo_detections is not None:
             return model_zoo_detections
@@ -146,6 +153,87 @@ class RKNNYoloDetector:
         ]
         detections.sort(key=lambda item: item.confidence, reverse=True)
         return detections
+
+    def _postprocess_damoyolo(
+        self,
+        outputs: Any,
+        frame_shape: Sequence[int],
+    ) -> List[Detection]:
+        if not isinstance(outputs, (list, tuple)) or len(outputs) != 2:
+            count = len(outputs) if isinstance(outputs, (list, tuple)) else 0
+            raise ValueError(f"DAMO-YOLO output count mismatch: expected 2, got {count}")
+        scores = _as_float32(outputs[0])
+        boxes = _as_float32(outputs[1])
+        expected_predictions = sum((self.input_size // stride) ** 2 for stride in (8, 16, 32))
+        expected_classes = len(self.class_names)
+        expected_scores = (1, expected_predictions, expected_classes)
+        expected_boxes = (1, expected_predictions, 4)
+        if tuple(scores.shape) != expected_scores:
+            raise ValueError(
+                f"DAMO-YOLO scores shape mismatch: expected {expected_scores}, got {tuple(scores.shape)}"
+            )
+        if tuple(boxes.shape) != expected_boxes:
+            raise ValueError(
+                f"DAMO-YOLO boxes shape mismatch: expected {expected_boxes}, got {tuple(boxes.shape)}"
+            )
+        if set(self.class_names) != set(range(expected_classes)):
+            raise ValueError("DAMO-YOLO class_names must use contiguous IDs starting at zero")
+        if not np.isfinite(scores).all() or not np.isfinite(boxes).all():
+            raise ValueError("DAMO-YOLO outputs contain NaN or infinity")
+
+        selected_boxes: List[np.ndarray] = []
+        selected_scores: List[np.ndarray] = []
+        selected_class_ids: List[np.ndarray] = []
+        for class_id in sorted(self.selected_class_ids):
+            class_scores = scores[0, :, class_id]
+            indexes = np.where(class_scores >= self.confidence_threshold)[0]
+            if indexes.size == 0:
+                continue
+            selected_boxes.append(boxes[0, indexes])
+            selected_scores.append(class_scores[indexes])
+            selected_class_ids.append(np.full(indexes.shape, class_id, dtype=np.int32))
+        if not selected_boxes:
+            return []
+
+        candidate_boxes = np.concatenate(selected_boxes, axis=0).astype(np.float32, copy=True)
+        candidate_scores = np.concatenate(selected_scores, axis=0).astype(np.float32, copy=False)
+        candidate_class_ids = np.concatenate(selected_class_ids, axis=0)
+        if candidate_scores.size > self.MAX_CANDIDATES:
+            top = np.argpartition(candidate_scores, -self.MAX_CANDIDATES)[-self.MAX_CANDIDATES :]
+            order = top[np.argsort(candidate_scores[top])[::-1]]
+            candidate_boxes = candidate_boxes[order]
+            candidate_scores = candidate_scores[order]
+            candidate_class_ids = candidate_class_ids[order]
+
+        height, width = int(frame_shape[0]), int(frame_shape[1])
+        candidate_boxes[:, [0, 2]] *= float(width) / float(self.input_size)
+        candidate_boxes[:, [1, 3]] *= float(height) / float(self.input_size)
+        candidate_boxes[:, [0, 2]] = np.clip(candidate_boxes[:, [0, 2]], 0.0, float(width))
+        candidate_boxes[:, [1, 3]] = np.clip(candidate_boxes[:, [1, 3]], 0.0, float(height))
+        valid = (candidate_boxes[:, 2] > candidate_boxes[:, 0]) & (
+            candidate_boxes[:, 3] > candidate_boxes[:, 1]
+        )
+        candidate_boxes = candidate_boxes[valid]
+        candidate_scores = candidate_scores[valid]
+        candidate_class_ids = candidate_class_ids[valid]
+
+        keep: List[int] = []
+        for class_id in np.unique(candidate_class_ids):
+            indexes = np.where(candidate_class_ids == class_id)[0]
+            class_keep = _nms_xyxy(
+                candidate_boxes[indexes], candidate_scores[indexes], self.nms_threshold
+            )
+            keep.extend(int(indexes[index]) for index in class_keep)
+        keep.sort(key=lambda index: float(candidate_scores[index]), reverse=True)
+        return [
+            Detection(
+                tuple(float(value) for value in candidate_boxes[index]),
+                float(candidate_scores[index]),
+                int(candidate_class_ids[index]),
+                self.class_names[int(candidate_class_ids[index])],
+            )
+            for index in keep
+        ]
 
     def _postprocess_yolov8_heads(
         self,
@@ -277,6 +365,12 @@ def _preprocess(frame: np.ndarray, input_size: int) -> Tuple[np.ndarray, float, 
     canvas[pad_y : pad_y + new_height, pad_x : pad_x + new_width] = resized
     rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
     return np.expand_dims(rgb, axis=0), ratio, (float(pad_x), float(pad_y))
+
+
+def _preprocess_damoyolo(frame: np.ndarray, input_size: int) -> np.ndarray:
+    resized = cv2.resize(frame, (input_size, input_size), interpolation=cv2.INTER_LINEAR)
+    rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+    return np.expand_dims(rgb, axis=0)
 
 
 def _rows_from_outputs(outputs: Any) -> List[np.ndarray]:
@@ -497,6 +591,8 @@ def _detector_name(model_path: Path, model_family: str) -> str:
         return "rknn-yolov5n"
     if "yolov6n" in stem:
         return "rknn-yolov6n"
+    if model_family in DAMO_FAMILIES:
+        return "rknn-damoyolo-cigarette-int8" if "int8" in stem else "rknn-damoyolo-cigarette"
     if model_family:
         return f"rknn-{model_family}"
     return "rknn-yolo"

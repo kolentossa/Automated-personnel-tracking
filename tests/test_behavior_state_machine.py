@@ -13,7 +13,9 @@ from vision.types import Detection, TrackedPerson
 class TemporalEventStateMachineTests(TestCase):
     def setUp(self) -> None:
         self.machine = TemporalEventStateMachine()
-        self.rule = BehaviorRule(100, 3, 0.3, 1000, max_gap_frames=1)
+        self.rule = BehaviorRule(
+            100, 3, 0.3, 1000, max_gap_frames=1, rearm_absence_ms=50
+        )
         self.signal = BehaviorSignal(
             "phone_call",
             7,
@@ -46,6 +48,25 @@ class TemporalEventStateMachineTests(TestCase):
         self.machine.update(self.signal, self.rule, 1100)
         self.machine.update(self.signal, self.rule, 1150)
         self.assertIsNotNone(self.machine.update(self.signal, self.rule, 1200))
+
+    def test_short_detection_gaps_do_not_rearm_continuous_event(self) -> None:
+        rule = BehaviorRule(
+            100, 3, 0.3, 1000, max_gap_frames=1, rearm_absence_ms=500
+        )
+        self.machine.update(self.signal, rule, 0)
+        self.machine.update(self.signal, rule, 50)
+        self.assertIsNotNone(self.machine.update(self.signal, rule, 100))
+        absent = BehaviorSignal("phone_call", 7, False, 0.0, self.signal.person_bbox)
+        self.machine.update(absent, rule, 200)
+        self.machine.update(absent, rule, 250)
+        for timestamp in (1100, 1150, 1200, 1250):
+            self.assertIsNone(self.machine.update(self.signal, rule, timestamp))
+
+        self.machine.update(absent, rule, 1300)
+        self.machine.update(absent, rule, 1900)
+        self.machine.update(self.signal, rule, 1950)
+        self.machine.update(self.signal, rule, 2000)
+        self.assertIsNotNone(self.machine.update(self.signal, rule, 2050))
 
 
 class BehaviorEngineScenarioTests(TestCase):
@@ -113,6 +134,31 @@ class BehaviorEngineScenarioTests(TestCase):
         smoke = Detection((140, 130, 260, 300), 0.95, 3, "smoke")
         events = _run(engine, self.track, [smoke], [self.face], (0, 50, 100, 150, 200))
         self.assertFalse(any(event.event_type == "smoking" for event in events))
+
+    def test_unassociated_cigarette_does_not_trigger_smoking(self) -> None:
+        engine = BehaviorEngine(self.config)
+        cigarette = Detection((500, 100, 520, 120), 0.95, 0, "cigarette")
+        events = _run(engine, self.track, [cigarette], [self.face], (0, 50, 100, 150, 200))
+        self.assertFalse(any(event.event_type == "smoking" for event in events))
+
+    def test_phone_drinking_eating_and_pen_labels_do_not_trigger_smoking(self) -> None:
+        engine = BehaviorEngine(self.config)
+        negatives = [
+            Detection((205, 175, 230, 210), 0.95, 67, "cell phone"),
+            Detection((205, 175, 230, 210), 0.95, 39, "bottle"),
+            Detection((205, 175, 230, 210), 0.95, 42, "fork"),
+            Detection((205, 175, 230, 210), 0.95, 99, "pen"),
+        ]
+        events = _run(engine, self.track, negatives, [self.face], (0, 50, 100, 150, 200))
+        self.assertFalse(any(event.event_type == "smoking" for event in events))
+
+    def test_direct_smoking_class_triggers(self) -> None:
+        engine = BehaviorEngine(self.config)
+        smoking = Detection((130, 110, 280, 350), 0.9, 2, "smoking")
+        events = _run(engine, self.track, [smoking], [self.face], (0, 50, 100, 150))
+        detected = [event for event in events if event.event_type == "smoking"]
+        self.assertEqual(len(detected), 1)
+        self.assertIn("direct_smoking_model_output", detected[0].evidence)
 
     def test_missing_track_state_is_cleaned(self) -> None:
         engine = BehaviorEngine(self.config)

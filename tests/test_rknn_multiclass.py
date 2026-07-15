@@ -5,7 +5,7 @@ from unittest import TestCase
 import numpy as np
 
 from app.behavior.geometry import associate_targets
-from app.detectors.rknn_yolo import COCO_CLASS_NAMES, RKNNYoloDetector
+from app.detectors.rknn_yolo import COCO_CLASS_NAMES, RKNNYoloDetector, _preprocess_damoyolo
 from vision.types import Detection, TrackedPerson
 
 
@@ -32,6 +32,39 @@ class RKNNMultiClassPostprocessTests(TestCase):
         self.assertIsNotNone(detections)
         self.assertEqual({item.label for item in detections}, {"person", "cell phone"})
 
+    def test_damoyolo_decodes_strict_pair_and_direct_resize(self) -> None:
+        detector = _damo_detector()
+        scores = np.zeros((1, 8400, 2), dtype=np.float32)
+        boxes = np.zeros((1, 8400, 4), dtype=np.float32)
+        scores[0, 17, 0] = 0.9
+        boxes[0, 17] = [64.0, 128.0, 320.0, 512.0]
+        detections = detector._postprocess_damoyolo([scores, boxes], (320, 640))
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0].label, "cigarette")
+        self.assertTrue(np.allclose(detections[0].bbox, (64.0, 64.0, 320.0, 256.0)))
+
+        frame = np.full((2, 4, 3), (1, 2, 3), dtype=np.uint8)
+        prepared = _preprocess_damoyolo(frame, 4)
+        self.assertEqual(prepared.shape, (1, 4, 4, 3))
+        self.assertEqual(prepared[0, 0, 0].tolist(), [3, 2, 1])
+
+    def test_damoyolo_output_shape_mismatch_is_explicit(self) -> None:
+        detector = _damo_detector()
+        scores = np.zeros((1, 8400, 1), dtype=np.float32)
+        boxes = np.zeros((1, 8400, 4), dtype=np.float32)
+        with self.assertRaisesRegex(ValueError, "scores shape mismatch"):
+            detector._postprocess_damoyolo([scores, boxes], (640, 640))
+        with self.assertRaisesRegex(ValueError, "output count mismatch"):
+            detector._postprocess_damoyolo([scores], (640, 640))
+
+    def test_damoyolo_class_map_mismatch_is_explicit(self) -> None:
+        detector = _damo_detector()
+        detector.class_names = {0: "cigarette"}
+        scores = np.zeros((1, 8400, 2), dtype=np.float32)
+        boxes = np.zeros((1, 8400, 4), dtype=np.float32)
+        with self.assertRaisesRegex(ValueError, "scores shape mismatch"):
+            detector._postprocess_damoyolo([scores, boxes], (640, 640))
+
 
 class TargetAssociationTests(TestCase):
     def test_phone_is_assigned_to_nearest_person_only(self) -> None:
@@ -43,3 +76,13 @@ class TargetAssociationTests(TestCase):
         assigned = associate_targets(tracks, [phone], ["cell phone"], expansion_ratio=0.2)
         self.assertEqual(assigned[1], [])
         self.assertEqual(assigned[2], [phone])
+
+
+def _damo_detector() -> RKNNYoloDetector:
+    detector = object.__new__(RKNNYoloDetector)
+    detector.input_size = 640
+    detector.confidence_threshold = 0.35
+    detector.nms_threshold = 0.70
+    detector.class_names = {0: "cigarette", 1: "__unused__"}
+    detector.selected_class_ids = {0}
+    return detector

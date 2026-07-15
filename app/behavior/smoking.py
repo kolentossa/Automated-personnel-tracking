@@ -33,13 +33,14 @@ class SmokingBehaviorStateMachine:
                 "flame": ["flame", "fire"],
                 "lighter": ["lighter"],
                 "hand": ["hand", "left hand", "right hand"],
+                "direct_smoking": ["smoking", "person smoking", "hand with cigarette"],
             }.items()
         }
         all_labels = set().union(*self.groups.values())
         self.expansion_ratio = float(association_config.get("person_expansion_ratio") or 0.12)
         self.stale_track_ms = int(association_config.get("stale_track_ms") or 5000)
         self.max_mouth_distance_ratio = float(self.config.get("max_mouth_distance_ratio") or 1.1)
-        self.allow_persistent_cigarette = bool(self.config.get("allow_persistent_cigarette", True))
+        self.allow_persistent_cigarette = bool(self.config.get("allow_persistent_cigarette", False))
         self._all_labels = all_labels
         self._rule = rule_from_config(self.config)
         self._machine = TemporalEventStateMachine()
@@ -94,6 +95,7 @@ class SmokingBehaviorStateMachine:
         flame = highest_confidence(grouped["flame"])
         lighter = highest_confidence(grouped["lighter"])
         hands = grouped["hand"]
+        direct_smoking = highest_confidence(grouped["direct_smoking"])
         face = detected_face or estimated_face_box(track.bbox)
         real_face = detected_face is not None
 
@@ -110,8 +112,12 @@ class SmokingBehaviorStateMachine:
         observed = False
         evidence = []
         confidence_parts = []
+        if direct_smoking is not None:
+            observed = True
+            confidence_parts.append(direct_smoking.confidence)
+            evidence.append("direct_smoking_model_output")
         if cigarette is not None:
-            observed = self.allow_persistent_cigarette or cigarette_near_mouth or hand_near_cigarette
+            observed = observed or self.allow_persistent_cigarette or cigarette_near_mouth or hand_near_cigarette
             confidence_parts.append(cigarette.confidence * (0.78 + 0.22 * cigarette_relation))
             evidence.append("cigarette_associated_with_person")
         if cigarette_near_mouth:
@@ -120,9 +126,11 @@ class SmokingBehaviorStateMachine:
             evidence.append("hand_to_mouth_with_cigarette")
             confidence_parts.append(0.85)
         if ignition:
-            observed = True
             evidence.append("flame_or_lighter_near_mouth")
-            confidence_parts.append(max(flame.confidence if flame else 0.0, lighter.confidence if lighter else 0.0))
+            if observed:
+                confidence_parts.append(
+                    max(flame.confidence if flame else 0.0, lighter.confidence if lighter else 0.0)
+                )
         if smoke is not None:
             evidence.append("smoke_near_associated_person")
             if observed:
@@ -138,6 +146,8 @@ class SmokingBehaviorStateMachine:
         for name, item in (("cigarette", cigarette), ("smoke", smoke), ("flame", flame), ("lighter", lighter)):
             if item is not None:
                 objects[name] = item.bbox
+        if direct_smoking is not None:
+            objects["smoking"] = direct_smoking.bbox
         if hands:
             objects["hand"] = highest_confidence(hands).bbox
         objects["face"] = face

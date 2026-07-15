@@ -16,19 +16,19 @@ models:
     core_mask: "0_1_2"
     expected_sha256: ff3a64e6fe180203128c8d42456b458d208d3a1e2217d63683af00d6194e82ea
   behavior:
-    enabled: false
-    required: false
+    enabled: true
+    required: true
     type: rknn-yolo
-    model_path: models/behavior_yolov8n.rknn
-    model_family: yolov8
+    model_path: models/behavior_damoyolo_cigarette_int8.rknn
+    model_family: damoyolo
     input_size: 640
-    confidence_threshold: 0.30
-    nms_threshold: 0.45
-    class_names: ["person", "cell phone", "cigarette", "smoke", "flame", "lighter", "hand"]
-    class_filter: ["cigarette", "smoke", "flame", "lighter", "hand"]
-    core_mask: "2"
-    detect_every_n_frames: 3
-    expected_sha256: ""
+    confidence_threshold: 0.35
+    nms_threshold: 0.70
+    class_names: {"0": "cigarette", "1": "__unused__"}
+    class_filter: ["cigarette"]
+    core_mask: "0_1_2"
+    detect_every_n_frames: 5
+    expected_sha256: d04c43a3a695c9985fbd03db1e0a2956763374fd686d949b8cd96cabdc7c5941
 
 class_groups:
   phone: ["cell phone", "phone", "mobile phone"]
@@ -50,6 +50,7 @@ phone:
     confidence_threshold: 0.35
     cooldown_ms: 10000
     max_gap_frames: 3
+    rearm_absence_ms: 2500
     max_face_distance_ratio: 0.90
   phone_playing:
     duration_ms: 2500
@@ -57,12 +58,14 @@ phone:
     confidence_threshold: 0.35
     cooldown_ms: 10000
     max_gap_frames: 3
+    rearm_absence_ms: 2500
   unauthorized_photography:
     duration_ms: 1200
     min_consecutive_frames: 6
     confidence_threshold: 0.35
     cooldown_ms: 15000
     max_gap_frames: 2
+    rearm_absence_ms: 2500
     max_alignment_angle_deg: 35
   prohibited_rois: [{"id":"critical-equipment","enabled":false,"normalized":true,"x1":0.65,"y1":0.15,"x2":0.95,"y2":0.85}]
 
@@ -73,8 +76,9 @@ smoking:
   confidence_threshold: 0.35
   cooldown_ms: 15000
   max_gap_frames: 5
+  rearm_absence_ms: 3000
   max_mouth_distance_ratio: 1.10
-  allow_persistent_cigarette: true
+  allow_persistent_cigarette: false
   smoke_only_environment_event: false
 
 evidence:

@@ -15,6 +15,7 @@ class BehaviorRule:
     confidence_threshold: float
     cooldown_ms: int
     max_gap_frames: int = 2
+    rearm_absence_ms: int = 2000
 
 
 @dataclass
@@ -35,11 +36,18 @@ class TemporalEventStateMachine:
     def __init__(self) -> None:
         self._states: Dict[Tuple[int, str], _TemporalState] = {}
         self._last_alert_ms: Dict[Tuple[int, str], float] = {}
+        self._latched: set[Tuple[int, str]] = set()
+        self._absence_started_ms: Dict[Tuple[int, str], float] = {}
 
     def update(self, signal: BehaviorSignal, rule: BehaviorRule, now_ms: float) -> Optional[BehaviorTrigger]:
         key = (int(signal.track_id), signal.event_type)
         state = self._states.get(key)
         if not signal.observed:
+            if key in self._latched:
+                absence_started = self._absence_started_ms.setdefault(key, now_ms)
+                if now_ms - absence_started >= rule.rearm_absence_ms:
+                    self._latched.discard(key)
+                    self._absence_started_ms.pop(key, None)
             if state is not None:
                 state.missed_frames += 1
                 state.last_update_ms = now_ms
@@ -47,6 +55,7 @@ class TemporalEventStateMachine:
                     del self._states[key]
             return None
 
+        self._absence_started_ms.pop(key, None)
         if state is None:
             state = _TemporalState(first_seen_ms=now_ms, last_seen_ms=now_ms, last_update_ms=now_ms)
             self._states[key] = state
@@ -63,6 +72,7 @@ class TemporalEventStateMachine:
         cooldown_ready = last_alert is None or now_ms - last_alert >= rule.cooldown_ms
         ready = (
             not state.triggered
+            and key not in self._latched
             and cooldown_ready
             and duration_ms >= rule.duration_ms
             and state.evidence_frames >= rule.min_consecutive_frames
@@ -72,6 +82,7 @@ class TemporalEventStateMachine:
             return None
 
         state.triggered = True
+        self._latched.add(key)
         self._last_alert_ms[key] = now_ms
         latest = state.latest_signal or signal
         return BehaviorTrigger(
@@ -93,6 +104,10 @@ class TemporalEventStateMachine:
         ]
         for key in stale_keys:
             self._states.pop(key, None)
+        inactive_latches = [key for key in self._latched if key[0] not in active]
+        for key in inactive_latches:
+            self._latched.discard(key)
+            self._absence_started_ms.pop(key, None)
         old_alerts = [key for key, value in self._last_alert_ms.items() if now_ms - value >= stale_track_ms * 4]
         for key in old_alerts:
             self._last_alert_ms.pop(key, None)
@@ -100,6 +115,8 @@ class TemporalEventStateMachine:
     def reset(self) -> None:
         self._states.clear()
         self._last_alert_ms.clear()
+        self._latched.clear()
+        self._absence_started_ms.clear()
 
     def snapshot(self) -> dict:
         active = []
@@ -112,7 +129,14 @@ class TemporalEventStateMachine:
                 "triggered": state.triggered,
                 "duration_ms": max(0, int(state.last_seen_ms - state.first_seen_ms)),
             })
-        return {"active_candidates": active, "active_candidate_count": len(active)}
+        return {
+            "active_candidates": active,
+            "active_candidate_count": len(active),
+            "latched_events": [
+                {"track_id": key[0], "event_type": key[1]} for key in sorted(self._latched)
+            ],
+            "latched_event_count": len(self._latched),
+        }
 
 
 def rule_from_config(config: dict) -> BehaviorRule:
@@ -122,4 +146,5 @@ def rule_from_config(config: dict) -> BehaviorRule:
         confidence_threshold=max(0.0, min(1.0, float(config.get("confidence_threshold") or 0.0))),
         cooldown_ms=max(0, int(config.get("cooldown_ms") or 0)),
         max_gap_frames=max(0, int(config.get("max_gap_frames") or 0)),
+        rearm_absence_ms=max(0, int(config.get("rearm_absence_ms", 2000) or 0)),
     )

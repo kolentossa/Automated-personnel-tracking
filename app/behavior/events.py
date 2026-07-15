@@ -48,6 +48,7 @@ class BehaviorEventManager:
         self._dropped = 0
         self._write_failures = 0
         self._last_error = ""
+        self._history_loaded = False
         self._logger = logging.getLogger("person_tracking.behavior_events")
         level_name = str(self.config.get("logging_level") or "INFO").upper()
         self._logger.setLevel(getattr(logging, level_name, logging.INFO))
@@ -55,6 +56,7 @@ class BehaviorEventManager:
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
+        self._load_history()
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._worker, name="behavior-event-writer", daemon=True)
         self._thread.start()
@@ -136,6 +138,31 @@ class BehaviorEventManager:
                 except Exception as exc:
                     self._logger.warning("Behavior event callback failed: %s", exc)
             self._queue.task_done()
+
+    def _load_history(self) -> None:
+        if self._history_loaded:
+            return
+        self._history_loaded = True
+        try:
+            path = self._safe_path(
+                str(self.config.get("event_log_path") or "logs/behavior_events.jsonl")
+            )
+            if not path.is_file():
+                return
+            payloads = []
+            for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines()[-200:]:
+                try:
+                    payload = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict) and payload.get("event_id"):
+                    payloads.append(payload)
+            with self._lock:
+                for payload in payloads:
+                    self._recent.appendleft(payload)
+                    self._counts[str(payload.get("event_type") or "unknown")] += 1
+        except Exception as exc:
+            self._last_error = f"Could not restore behavior event history: {exc}"
 
     def _persist_images(self, payload: dict, frame: np.ndarray, errors: List[str]) -> None:
         if payload.get("snapshot_path"):

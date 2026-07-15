@@ -29,19 +29,19 @@ DEFAULT_BEHAVIOR_CONFIG: Dict[str, Any] = {
             "expected_sha256": "ff3a64e6fe180203128c8d42456b458d208d3a1e2217d63683af00d6194e82ea",
         },
         "behavior": {
-            "enabled": False,
-            "required": False,
+            "enabled": True,
+            "required": True,
             "type": "rknn-yolo",
-            "model_path": "models/behavior_yolov8n.rknn",
-            "model_family": "yolov8",
+            "model_path": "models/behavior_damoyolo_cigarette_int8.rknn",
+            "model_family": "damoyolo",
             "input_size": 640,
-            "confidence_threshold": 0.3,
-            "nms_threshold": 0.45,
-            "class_names": ["person", "cell phone", "cigarette", "smoke", "flame", "lighter", "hand"],
-            "class_filter": ["cigarette", "smoke", "flame", "lighter", "hand"],
-            "core_mask": "2",
-            "detect_every_n_frames": 3,
-            "expected_sha256": "",
+            "confidence_threshold": 0.35,
+            "nms_threshold": 0.70,
+            "class_names": {"0": "cigarette", "1": "__unused__"},
+            "class_filter": ["cigarette"],
+            "core_mask": "0_1_2",
+            "detect_every_n_frames": 5,
+            "expected_sha256": "d04c43a3a695c9985fbd03db1e0a2956763374fd686d949b8cd96cabdc7c5941",
         },
     },
     "class_groups": {
@@ -61,6 +61,7 @@ DEFAULT_BEHAVIOR_CONFIG: Dict[str, Any] = {
             "confidence_threshold": 0.35,
             "cooldown_ms": 10000,
             "max_gap_frames": 3,
+            "rearm_absence_ms": 2500,
             "max_face_distance_ratio": 0.9,
         },
         "phone_playing": {
@@ -69,6 +70,7 @@ DEFAULT_BEHAVIOR_CONFIG: Dict[str, Any] = {
             "confidence_threshold": 0.35,
             "cooldown_ms": 10000,
             "max_gap_frames": 3,
+            "rearm_absence_ms": 2500,
         },
         "unauthorized_photography": {
             "duration_ms": 1200,
@@ -76,6 +78,7 @@ DEFAULT_BEHAVIOR_CONFIG: Dict[str, Any] = {
             "confidence_threshold": 0.35,
             "cooldown_ms": 15000,
             "max_gap_frames": 2,
+            "rearm_absence_ms": 2500,
             "max_alignment_angle_deg": 35,
         },
         "prohibited_rois": [],
@@ -87,8 +90,9 @@ DEFAULT_BEHAVIOR_CONFIG: Dict[str, Any] = {
         "confidence_threshold": 0.35,
         "cooldown_ms": 15000,
         "max_gap_frames": 5,
+        "rearm_absence_ms": 3000,
         "max_mouth_distance_ratio": 1.1,
-        "allow_persistent_cigarette": True,
+        "allow_persistent_cigarette": False,
         "smoke_only_environment_event": False,
     },
     "evidence": {
@@ -130,10 +134,40 @@ def _validate(config: Dict[str, Any]) -> None:
     rois = config.get("phone", {}).get("prohibited_rois", [])
     if not isinstance(rois, list):
         raise ValueError("phone.prohibited_rois must be an inline JSON list")
+    _validate_behavior_model(config)
+
+
+def _validate_behavior_model(config: Dict[str, Any]) -> None:
+    model = config.get("models", {}).get("behavior", {})
+    if not bool(model.get("enabled", False)):
+        return
+    if int(model.get("input_size") or 0) < 32:
+        raise ValueError("models.behavior.input_size must be at least 32")
+    if int(model.get("detect_every_n_frames") or 0) < 1:
+        raise ValueError("models.behavior.detect_every_n_frames must be positive")
+    class_names = model.get("class_names") or []
+    values = class_names.values() if isinstance(class_names, dict) else class_names
+    labels = {str(value).strip().lower() for value in values}
+    if not labels or "" in labels:
+        raise ValueError("models.behavior.class_names must contain non-empty labels")
+    selected = {str(value).strip().lower() for value in (model.get("class_filter") or [])}
+    unknown = selected.difference(labels)
+    if unknown:
+        raise ValueError(f"models.behavior.class_filter contains unknown labels: {sorted(unknown)}")
+    direct_evidence = {"cigarette", "cigar", "smoking", "person smoking", "hand with cigarette"}
+    effective = selected or labels
+    if bool(config.get("smoking", {}).get("enabled", True)) and not effective.intersection(direct_evidence):
+        raise ValueError("Enabled smoking detection requires a direct cigarette or smoking class")
 
 
 def _validate_rule(name: str, value: Dict[str, Any]) -> None:
-    for key in ("duration_ms", "min_consecutive_frames", "cooldown_ms", "max_gap_frames"):
+    for key in (
+        "duration_ms",
+        "min_consecutive_frames",
+        "cooldown_ms",
+        "max_gap_frames",
+        "rearm_absence_ms",
+    ):
         if int(value.get(key) or 0) < 0:
             raise ValueError(f"{name}.{key} must be non-negative")
     confidence = float(value.get("confidence_threshold") or 0.0)

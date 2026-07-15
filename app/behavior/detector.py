@@ -10,6 +10,14 @@ from app.config import project_path
 from app.detectors.rknn_yolo import RKNNYoloDetector
 from vision.types import Detection, Frame
 
+DIRECT_SMOKING_LABELS = {
+    "cigarette",
+    "cigar",
+    "smoking",
+    "person smoking",
+    "hand with cigarette",
+}
+
 
 class BehaviorObjectDetector:
     """Load a custom behavior model only when explicitly enabled."""
@@ -28,6 +36,7 @@ class BehaviorObjectDetector:
         self._detector = None
         self._last_detections: List[Detection] = []
         self._has_run = False
+        self._configured_labels = _configured_labels(self.config)
         if self.enabled:
             self._initialise()
 
@@ -49,6 +58,8 @@ class BehaviorObjectDetector:
             self._has_run = True
             self.error = f"Behavior RKNN inference failed: {exc}"
             self.last_profile = _empty_profile()
+            if self.required:
+                raise RuntimeError(self.error) from exc
             return list(self._last_detections)
 
     def release(self) -> None:
@@ -60,12 +71,22 @@ class BehaviorObjectDetector:
             "behavior_model_enabled": self.enabled,
             "behavior_model_required": self.required,
             "behavior_model_available": self.available,
+            "behavior_model_loaded": self.available,
             "behavior_model": self.name,
             "behavior_model_path": self.model_path,
             "behavior_model_npu_enabled": self.npu_enabled,
+            "smoking_detection_available": self.smoking_detection_available,
             "behavior_model_error": self.error,
             "behavior_model_detect_every_n_frames": self.detect_every_n_frames,
         }
+
+    @property
+    def smoking_detection_available(self) -> bool:
+        return bool(
+            self.available
+            and self.npu_enabled
+            and self._configured_labels.intersection(DIRECT_SMOKING_LABELS)
+        )
 
     def _initialise(self) -> None:
         path = project_path(self.model_path)
@@ -110,3 +131,11 @@ def _sha256(path: Path) -> str:
 
 def _empty_profile() -> Dict[str, float]:
     return {"preprocess_ms": 0.0, "inference_ms": 0.0, "postprocess_ms": 0.0}
+
+
+def _configured_labels(config: dict) -> set[str]:
+    class_names = config.get("class_names") or []
+    values = class_names.values() if isinstance(class_names, dict) else class_names
+    available = {str(value).strip().lower() for value in values}
+    selected = {str(value).strip().lower() for value in (config.get("class_filter") or [])}
+    return available.intersection(selected) if selected else available
