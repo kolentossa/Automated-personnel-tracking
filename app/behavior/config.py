@@ -70,6 +70,8 @@ DEFAULT_BEHAVIOR_CONFIG: Dict[str, Any] = {
             "max_gap_frames": 10,
             "rearm_absence_ms": 2500,
             "max_face_distance_ratio": 1.15,
+            "max_horizontal_offset_ratio": 1.0,
+            "max_vertical_offset_ratio": 0.75,
         },
         "phone_playing": {
             "duration_ms": 1800,

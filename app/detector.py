@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -14,6 +15,8 @@ from app.detectors.rknn_yolo import RKNNYoloDetector
 from vision.detection.motion_detector import MotionPersonDetector
 from vision.detection.yolo_detector import OpenCVDNNYoloDetector
 from vision.types import Detection, Frame
+
+PHONE_LABELS = {"cell phone", "phone", "mobile phone"}
 
 
 class PersonDetector:
@@ -31,8 +34,29 @@ class PersonDetector:
         self.fallback_to_cpu = bool(self.config.get("fallback_to_cpu", False))
         self.warning = ""
         self.last_profile: Dict[str, float] = _empty_profile()
+        self.phone_roi_config = _normalise_phone_roi_config(
+            self.config.get("phone_roi_refinement")
+        )
+        self.phone_roi_enabled = False
+        self.phone_roi_error = ""
+        self.phone_roi_runs = 0
+        self.phone_roi_hits = 0
+        self.phone_roi_cache_reuses = 0
+        self.phone_roi_last_count = 0
+        self.phone_roi_last_inference_ms = 0.0
+        self._phone_roi_primary_calls = 0
+        self._phone_roi_cache_age = 0
+        self._phone_roi_cache: List[Detection] = []
         self._detector = self._create_detector()
         self.output_labels = self._discover_output_labels()
+        self._phone_label = next(
+            (label for label in PHONE_LABELS if label in self.output_labels), "cell phone"
+        )
+        self.phone_roi_enabled = bool(
+            self.phone_roi_config["enabled"]
+            and isinstance(self._detector, RKNNYoloDetector)
+            and self._phone_label in self.output_labels
+        )
 
     def detect(self, frame: Frame) -> List[Detection]:
         return [item for item in self.detect_scene(frame) if int(item.class_id) == 0 or item.label == "person"]
@@ -42,16 +66,15 @@ class PersonDetector:
 
         started = time.monotonic()
         detections = self._detector.detect(frame)
-        elapsed_ms = round((time.monotonic() - started) * 1000.0, 1)
-        profile = getattr(self._detector, "last_profile", None)
-        if profile:
-            self.last_profile = _normalise_profile(profile, elapsed_ms)
-        else:
-            self.last_profile = {
-                "preprocess_ms": 0.0,
-                "inference_ms": elapsed_ms,
-                "postprocess_ms": 0.0,
-            }
+        base_elapsed_ms = round((time.monotonic() - started) * 1000.0, 1)
+        base_profile = _normalise_profile(
+            getattr(self._detector, "last_profile", None) or {}, base_elapsed_ms
+        )
+        detections, roi_profile = self._refine_phone_detections(frame, detections)
+        self.last_profile = {
+            key: round(base_profile[key] + roi_profile[key], 1)
+            for key in _empty_profile()
+        }
         return detections
 
     def release(self) -> None:
@@ -61,6 +84,138 @@ class PersonDetector:
 
     def supports_label(self, label: str) -> bool:
         return str(label).strip().lower() in self.output_labels
+
+    def snapshot(self) -> dict:
+        return {
+            "phone_roi_refinement_enabled": self.phone_roi_enabled,
+            "phone_roi_refinement_configured": bool(self.phone_roi_config["enabled"]),
+            "phone_roi_refinement_runs": self.phone_roi_runs,
+            "phone_roi_refinement_hits": self.phone_roi_hits,
+            "phone_roi_refinement_cache_reuses": self.phone_roi_cache_reuses,
+            "phone_roi_refinement_last_count": self.phone_roi_last_count,
+            "phone_roi_refinement_inference_ms": self.phone_roi_last_inference_ms,
+            "phone_roi_refinement_error": self.phone_roi_error,
+        }
+
+    def _refine_phone_detections(
+        self, frame: Frame, detections: List[Detection]
+    ) -> tuple[List[Detection], Dict[str, float]]:
+        empty_profile = _empty_profile()
+        if not self.phone_roi_enabled:
+            return detections, empty_profile
+
+        people = [item for item in detections if _label(item) == "person" or int(item.class_id) == 0]
+        if not people:
+            self._clear_phone_roi_cache()
+            return detections, empty_profile
+        phones = [item for item in detections if _label(item) in PHONE_LABELS]
+        targets = [
+            person
+            for person in people
+            if not any(_center_inside(phone.bbox, _expand_box(person.bbox, 0.08)) for phone in phones)
+        ]
+        if not targets:
+            self._clear_phone_roi_cache()
+            return detections, empty_profile
+
+        targets.sort(key=lambda item: _box_area(item.bbox), reverse=True)
+        self._phone_roi_primary_calls += 1
+        interval = int(self.phone_roi_config["detect_every_n_primary_frames"])
+        should_run = (self._phone_roi_primary_calls - 1) % interval == 0
+        if not should_run:
+            self._phone_roi_cache_age += 1
+            cached = self._valid_cached_phones(targets)
+            if cached and self._phone_roi_cache_age <= int(self.phone_roi_config["cache_primary_frames"]):
+                self.phone_roi_cache_reuses += 1
+                return self._merge_phone_detections(detections, cached), empty_profile
+            return detections, empty_profile
+
+        self.phone_roi_runs += 1
+        self.phone_roi_last_count = 0
+        self.phone_roi_last_inference_ms = 0.0
+        roi_profile = _empty_profile()
+        refined: List[Detection] = []
+        height, width = frame.shape[:2]
+        try:
+            for person in targets[: int(self.phone_roi_config["max_people"])]:
+                if person.bbox[3] - person.bbox[1] < float(self.phone_roi_config["min_person_height_px"]):
+                    continue
+                crop_box = _phone_roi_crop(person.bbox, width, height, self.phone_roi_config)
+                x1, y1, x2, y2 = crop_box
+                crop = frame[y1:y2, x1:x2]
+                if crop.size == 0:
+                    continue
+                crop_detections = self._detector.detect(
+                    crop,
+                    class_confidence_thresholds={
+                        self._phone_label: float(self.phone_roi_config["confidence_threshold"])
+                    },
+                )
+                current_profile = _normalise_profile(
+                    getattr(self._detector, "last_profile", None) or {}, 0.0
+                )
+                for key in roi_profile:
+                    roi_profile[key] += current_profile[key]
+                for item in crop_detections:
+                    if _label(item) not in PHONE_LABELS:
+                        continue
+                    mapped = Detection(
+                        (
+                            max(0.0, min(float(width), item.bbox[0] + x1)),
+                            max(0.0, min(float(height), item.bbox[1] + y1)),
+                            max(0.0, min(float(width), item.bbox[2] + x1)),
+                            max(0.0, min(float(height), item.bbox[3] + y1)),
+                        ),
+                        item.confidence,
+                        item.class_id,
+                        item.label,
+                    )
+                    area_ratio = _box_area(mapped.bbox) / max(1.0, _box_area(person.bbox))
+                    if area_ratio <= float(self.phone_roi_config["max_phone_area_ratio"]):
+                        refined.append(mapped)
+            self.phone_roi_error = ""
+        except Exception as exc:
+            self.phone_roi_error = f"Phone ROI inference failed: {exc}"
+            self._clear_phone_roi_cache()
+            return detections, roi_profile
+
+        refined = _deduplicate_detections(
+            refined,
+            float(self.phone_roi_config["nms_threshold"]),
+            float(self.phone_roi_config["containment_threshold"]),
+        )
+        self._phone_roi_cache = list(refined)
+        self._phone_roi_cache_age = 0
+        self.phone_roi_last_count = len(refined)
+        self.phone_roi_last_inference_ms = round(roi_profile["inference_ms"], 1)
+        if refined:
+            self.phone_roi_hits += 1
+        return self._merge_phone_detections(detections, refined), roi_profile
+
+    def _valid_cached_phones(self, people: List[Detection]) -> List[Detection]:
+        return [
+            phone
+            for phone in self._phone_roi_cache
+            if any(_center_inside(phone.bbox, _expand_box(person.bbox, 0.12)) for person in people)
+        ]
+
+    def _merge_phone_detections(
+        self, detections: List[Detection], additions: List[Detection]
+    ) -> List[Detection]:
+        non_phones = [item for item in detections if _label(item) not in PHONE_LABELS]
+        phones = [item for item in detections if _label(item) in PHONE_LABELS]
+        phones.extend(additions)
+        phones = _deduplicate_detections(
+            phones,
+            float(self.phone_roi_config["nms_threshold"]),
+            float(self.phone_roi_config["containment_threshold"]),
+        )
+        return non_phones + phones
+
+    def _clear_phone_roi_cache(self) -> None:
+        self._phone_roi_cache = []
+        self._phone_roi_cache_age = 0
+        self.phone_roi_last_count = 0
 
     def _create_detector(self):
         min_area = int(self.config.get("motion_min_area") or 500)
@@ -262,6 +417,142 @@ def _normalise_profile(profile: Dict[str, Any], elapsed_ms: float) -> Dict[str, 
     if not any(result.values()):
         result["inference_ms"] = elapsed_ms
     return result
+
+
+def _normalise_phone_roi_config(value: Any) -> Dict[str, Any]:
+    defaults: Dict[str, Any] = {
+        "enabled": False,
+        "confidence_threshold": 0.16,
+        "detect_every_n_primary_frames": 2,
+        "max_people": 1,
+        "min_person_height_px": 160,
+        "horizontal_expansion_ratio": 0.20,
+        "top_expansion_ratio": 0.04,
+        "upper_body_ratio": 0.90,
+        "cache_primary_frames": 1,
+        "max_phone_area_ratio": 0.25,
+        "nms_threshold": 0.35,
+        "containment_threshold": 0.70,
+    }
+    if value is None:
+        return defaults
+    if not isinstance(value, dict):
+        raise TypeError("detector.phone_roi_refinement must be a mapping")
+    unknown = set(value).difference(defaults)
+    if unknown:
+        raise ValueError(f"Unknown phone_roi_refinement options: {sorted(unknown)}")
+    result = dict(defaults)
+    result.update(value)
+    result["enabled"] = bool(result["enabled"])
+    for key in ("detect_every_n_primary_frames", "max_people"):
+        result[key] = int(result[key])
+        if result[key] < 1:
+            raise ValueError(f"phone_roi_refinement.{key} must be positive")
+    result["cache_primary_frames"] = int(result["cache_primary_frames"])
+    if result["cache_primary_frames"] < 0:
+        raise ValueError("phone_roi_refinement.cache_primary_frames must be non-negative")
+    result["min_person_height_px"] = float(result["min_person_height_px"])
+    if result["min_person_height_px"] < 1:
+        raise ValueError("phone_roi_refinement.min_person_height_px must be positive")
+    for key in (
+        "confidence_threshold",
+        "horizontal_expansion_ratio",
+        "top_expansion_ratio",
+        "upper_body_ratio",
+        "max_phone_area_ratio",
+        "nms_threshold",
+        "containment_threshold",
+    ):
+        result[key] = float(result[key])
+        if not 0.0 <= result[key] <= 1.0:
+            raise ValueError(f"phone_roi_refinement.{key} must be between 0 and 1")
+    if result["upper_body_ratio"] < 0.25:
+        raise ValueError("phone_roi_refinement.upper_body_ratio must be at least 0.25")
+    return result
+
+
+def _phone_roi_crop(
+    person_bbox: tuple[float, float, float, float],
+    frame_width: int,
+    frame_height: int,
+    config: Dict[str, Any],
+) -> tuple[int, int, int, int]:
+    x1, y1, x2, y2 = person_bbox
+    width = max(1.0, x2 - x1)
+    height = max(1.0, y2 - y1)
+    horizontal = float(config["horizontal_expansion_ratio"]) * width
+    top = float(config["top_expansion_ratio"]) * height
+    crop_x1 = max(0, int(math.floor(x1 - horizontal)))
+    crop_y1 = max(0, int(math.floor(y1 - top)))
+    crop_x2 = min(frame_width, int(math.ceil(x2 + horizontal)))
+    crop_y2 = min(frame_height, int(math.ceil(y1 + float(config["upper_body_ratio"]) * height)))
+    return crop_x1, crop_y1, max(crop_x1 + 1, crop_x2), max(crop_y1 + 1, crop_y2)
+
+
+def _deduplicate_detections(
+    detections: List[Detection], iou_threshold: float, containment_threshold: float
+) -> List[Detection]:
+    ordered = sorted(detections, key=lambda item: item.confidence, reverse=True)
+    kept: List[Detection] = []
+    for candidate in ordered:
+        if any(
+            _box_iou(candidate.bbox, existing.bbox) > iou_threshold
+            or _intersection_over_smaller(candidate.bbox, existing.bbox) >= containment_threshold
+            for existing in kept
+        ):
+            continue
+        kept.append(candidate)
+    return kept
+
+
+def _label(detection: Detection) -> str:
+    return str(detection.label).strip().lower()
+
+
+def _expand_box(
+    box: tuple[float, float, float, float], ratio: float
+) -> tuple[float, float, float, float]:
+    x1, y1, x2, y2 = box
+    dx = max(0.0, x2 - x1) * ratio
+    dy = max(0.0, y2 - y1) * ratio
+    return x1 - dx, y1 - dy, x2 + dx, y2 + dy
+
+
+def _center_inside(
+    target: tuple[float, float, float, float], region: tuple[float, float, float, float]
+) -> bool:
+    center_x = (target[0] + target[2]) * 0.5
+    center_y = (target[1] + target[3]) * 0.5
+    return region[0] <= center_x <= region[2] and region[1] <= center_y <= region[3]
+
+
+def _box_area(box: tuple[float, float, float, float]) -> float:
+    return max(0.0, box[2] - box[0]) * max(0.0, box[3] - box[1])
+
+
+def _intersection_area(
+    first: tuple[float, float, float, float], second: tuple[float, float, float, float]
+) -> float:
+    return _box_area((
+        max(first[0], second[0]),
+        max(first[1], second[1]),
+        min(first[2], second[2]),
+        min(first[3], second[3]),
+    ))
+
+
+def _box_iou(
+    first: tuple[float, float, float, float], second: tuple[float, float, float, float]
+) -> float:
+    intersection = _intersection_area(first, second)
+    return intersection / max(1.0, _box_area(first) + _box_area(second) - intersection)
+
+
+def _intersection_over_smaller(
+    first: tuple[float, float, float, float], second: tuple[float, float, float, float]
+) -> float:
+    intersection = _intersection_area(first, second)
+    return intersection / max(1.0, min(_box_area(first), _box_area(second)))
 
 
 def _ms(seconds: float) -> float:

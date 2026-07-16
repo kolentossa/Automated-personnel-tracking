@@ -24,6 +24,19 @@ detector:
   class_confidence_thresholds: {"person": 0.35, "cell phone": 0.20}
   nms_threshold: 0.45
   class_filter: ["person", "cell phone"]
+  phone_roi_refinement:
+    enabled: true
+    confidence_threshold: 0.16
+    detect_every_n_primary_frames: 2
+    max_people: 1
+    min_person_height_px: 160
+    horizontal_expansion_ratio: 0.20
+    top_expansion_ratio: 0.04
+    upper_body_ratio: 0.90
+    cache_primary_frames: 1
+    max_phone_area_ratio: 0.25
+    nms_threshold: 0.35
+    containment_threshold: 0.70
   core_mask: "0_1_2"
   expected_sha256: ff3a64e6fe180203128c8d42456b458d208d3a1e2217d63683af00d6194e82ea
   fallback_to_cpu: false

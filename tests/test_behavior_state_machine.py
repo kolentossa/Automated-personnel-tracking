@@ -95,6 +95,13 @@ class BehaviorEngineScenarioTests(TestCase):
         events = _run(engine, self.track, [phone], [self.face], (0, 50, 100, 150, 200))
         self.assertTrue(any(event.event_type == "phone_call" for event in events))
 
+    def test_phone_far_below_estimated_face_is_not_a_call(self) -> None:
+        engine = BehaviorEngine(self.config)
+        large_person = TrackedPerson(3, (0, 0, 1200, 700), 0.95)
+        phone = Detection((900, 640, 1080, 700), 0.30, 67, "cell phone")
+        events = _run(engine, large_person, [phone], [], (0, 50, 100, 150, 200, 250))
+        self.assertFalse(any(event.event_type == "phone_call" for event in events))
+
     def test_phone_playing_triggers(self) -> None:
         engine = BehaviorEngine(self.config)
         phone = Detection((175, 300, 210, 345), 0.9, 67, "cell phone")

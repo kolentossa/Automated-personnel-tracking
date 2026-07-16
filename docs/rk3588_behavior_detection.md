@@ -171,6 +171,19 @@ The primary detector remains controlled by `config.yaml` unless
 preserves existing model-selection workflows while allowing one-file overrides
 for a dedicated deployment.
 
+### Small and occluded phone refinement
+
+`detector.phone_roi_refinement` in `config.yaml` enables a low-frequency second
+NPU pass over the largest unmatched person's upper body. The crop comes from
+the unmodified camera frame and is processed before privacy mosaic. Only phone
+outputs are mapped back to the full frame; ROI person boxes are discarded.
+Per-call threshold override, person-relative area filtering, IoU/containment
+deduplication, and a one-primary-frame cache improve recall without changing
+the full-frame person threshold or running the extra inference every frame.
+
+The health and statistics APIs expose `phone_roi_refinement_enabled`, run/hit
+counts, cache reuse, last ROI inference time, and any non-fatal ROI error.
+
 ## Input Sources
 
 The main `config.yaml` supports all three source types:

@@ -467,6 +467,15 @@ still requires person association, face/body geometry, temporal persistence,
 and cooldown, so lowering the phone class threshold does not admit weak person
 boxes. Short detector gaps are tolerated by the phone state machine.
 
+For back-facing, partially occluded, or small phones, the primary detector can
+run a second RKNN pass over an enlarged upper-body crop. This ROI pass uses the
+same verified YOLOv8n model, a phone-only `0.16` threshold, at most one largest
+person, and runs every second primary inference. Its result is cached for one
+primary interval and deduplicated against full-frame phone boxes. The crop is
+taken from the original camera frame: phone inference and behavior analysis run
+before face/head mosaic is applied to the Web output, so privacy masking cannot
+hide a phone from the detector.
+
 Cigarette postprocessing uses `0.35` IoU NMS plus containment suppression to
 collapse nested boxes around one object. The deployed DAMO profile also rejects
 boxes with a side below 5 px, an aspect ratio above 4.0, or an area above 2.5%
@@ -524,6 +533,19 @@ detector:
   class_confidence_thresholds: {"person": 0.35, "cell phone": 0.20}
   nms_threshold: 0.45
   class_filter: ["person", "cell phone"]
+  phone_roi_refinement:
+    enabled: true
+    confidence_threshold: 0.16
+    detect_every_n_primary_frames: 2
+    max_people: 1
+    min_person_height_px: 160
+    horizontal_expansion_ratio: 0.20
+    top_expansion_ratio: 0.04
+    upper_body_ratio: 0.90
+    cache_primary_frames: 1
+    max_phone_area_ratio: 0.25
+    nms_threshold: 0.35
+    containment_threshold: 0.70
   core_mask: "0_1_2"
   fallback_to_cpu: false
 ```

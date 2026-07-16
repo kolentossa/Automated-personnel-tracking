@@ -92,7 +92,15 @@ class RKNNYoloDetector:
             raise RuntimeError(f"RKNN init_runtime failed with code {ret}")
         self.npu_enabled = True
 
-    def detect(self, frame: Frame) -> List[Detection]:
+    def detect(
+        self,
+        frame: Frame,
+        *,
+        class_confidence_thresholds: Optional[Dict[Any, float]] = None,
+    ) -> List[Detection]:
+        threshold_overrides = _normalise_class_thresholds(
+            class_confidence_thresholds, self.class_names
+        )
         t0 = time.monotonic()
         if self.model_family in DAMO_FAMILIES:
             input_image = _preprocess_damoyolo(frame, self.input_size)
@@ -102,7 +110,9 @@ class RKNNYoloDetector:
         t1 = time.monotonic()
         outputs = self._rknn.inference(inputs=[input_image])
         t2 = time.monotonic()
-        detections = self._postprocess(outputs, frame.shape[:2], ratio, pad)
+        detections = self._postprocess(
+            outputs, frame.shape[:2], ratio, pad, threshold_overrides
+        )
         t3 = time.monotonic()
         self.last_profile = {
             "preprocess_ms": _ms(t1 - t0),
@@ -125,10 +135,13 @@ class RKNNYoloDetector:
         frame_shape: Sequence[int],
         ratio: float,
         pad: Tuple[float, float],
+        threshold_overrides: Optional[Dict[int, float]] = None,
     ) -> List[Detection]:
         if self.model_family in DAMO_FAMILIES:
-            return self._postprocess_damoyolo(outputs, frame_shape)
-        model_zoo_detections = self._postprocess_yolov8_heads(outputs, frame_shape, ratio, pad)
+            return self._postprocess_damoyolo(outputs, frame_shape, threshold_overrides)
+        model_zoo_detections = self._postprocess_yolov8_heads(
+            outputs, frame_shape, ratio, pad, threshold_overrides
+        )
         if model_zoo_detections is not None:
             return model_zoo_detections
 
@@ -140,7 +153,7 @@ class RKNNYoloDetector:
         class_ids: List[int] = []
 
         for row in rows:
-            decoded = self._decode_row(row)
+            decoded = self._decode_row(row, threshold_overrides)
             if decoded is None:
                 continue
             x1, y1, x2, y2, score, class_id = decoded
@@ -152,13 +165,15 @@ class RKNNYoloDetector:
             confidences.append(float(score))
             class_ids.append(int(class_id))
 
+        effective_thresholds = dict(getattr(self, "class_confidence_thresholds", {}))
+        effective_thresholds.update(threshold_overrides or {})
         keep = _class_aware_nms(
             boxes_xywh,
             confidences,
             class_ids,
             self.confidence_threshold,
             self.nms_threshold,
-            getattr(self, "class_confidence_thresholds", {}),
+            effective_thresholds,
         )
         detections = [
             Detection(boxes_xyxy[index], confidences[index], class_ids[index], self.class_names[class_ids[index]])
@@ -171,6 +186,7 @@ class RKNNYoloDetector:
         self,
         outputs: Any,
         frame_shape: Sequence[int],
+        threshold_overrides: Optional[Dict[int, float]] = None,
     ) -> List[Detection]:
         if not isinstance(outputs, (list, tuple)) or len(outputs) != 2:
             count = len(outputs) if isinstance(outputs, (list, tuple)) else 0
@@ -199,7 +215,9 @@ class RKNNYoloDetector:
         selected_class_ids: List[np.ndarray] = []
         for class_id in sorted(self.selected_class_ids):
             class_scores = scores[0, :, class_id]
-            indexes = np.where(class_scores >= self._threshold_for_class(class_id))[0]
+            indexes = np.where(
+                class_scores >= self._threshold_for_class(class_id, threshold_overrides)
+            )[0]
             if indexes.size == 0:
                 continue
             selected_boxes.append(boxes[0, indexes])
@@ -256,6 +274,7 @@ class RKNNYoloDetector:
         frame_shape: Sequence[int],
         ratio: float,
         pad: Tuple[float, float],
+        threshold_overrides: Optional[Dict[int, float]] = None,
     ) -> Optional[List[Detection]]:
         tensors = outputs if isinstance(outputs, (list, tuple)) else []
         if len(tensors) < 6 or len(tensors) % 3 != 0:
@@ -278,7 +297,9 @@ class RKNNYoloDetector:
                 if class_id >= class_tensor.shape[1]:
                     continue
                 class_map = class_tensor[0, class_id]
-                ys, xs = np.where(class_map >= self._threshold_for_class(class_id))
+                ys, xs = np.where(
+                    class_map >= self._threshold_for_class(class_id, threshold_overrides)
+                )
                 if ys.size == 0:
                     continue
                 scores = class_map[ys, xs].astype(np.float32, copy=False)
@@ -328,7 +349,11 @@ class RKNNYoloDetector:
         ) for index in keep]
         return detections
 
-    def _decode_row(self, row: np.ndarray) -> Optional[Tuple[float, float, float, float, float, int]]:
+    def _decode_row(
+        self,
+        row: np.ndarray,
+        threshold_overrides: Optional[Dict[int, float]] = None,
+    ) -> Optional[Tuple[float, float, float, float, float, int]]:
         values = np.asarray(row, dtype=np.float32).reshape(-1)
         if values.size < 6:
             return None
@@ -356,7 +381,9 @@ class RKNNYoloDetector:
             class_id = int(np.argmax(class_scores))
             score = float(class_scores[class_id])
 
-        if class_id not in self.selected_class_ids or score < self._threshold_for_class(class_id):
+        if class_id not in self.selected_class_ids or score < self._threshold_for_class(
+            class_id, threshold_overrides
+        ):
             return None
 
         coords = values[:4].astype(np.float32)
@@ -373,7 +400,13 @@ class RKNNYoloDetector:
             y2 = cy + bh / 2.0
         return x1, y1, x2, y2, score, class_id
 
-    def _threshold_for_class(self, class_id: int) -> float:
+    def _threshold_for_class(
+        self,
+        class_id: int,
+        threshold_overrides: Optional[Dict[int, float]] = None,
+    ) -> float:
+        if threshold_overrides and int(class_id) in threshold_overrides:
+            return float(threshold_overrides[int(class_id)])
         thresholds = getattr(self, "class_confidence_thresholds", {})
         return float(thresholds.get(int(class_id), self.confidence_threshold))
 

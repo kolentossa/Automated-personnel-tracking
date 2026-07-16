@@ -57,6 +57,31 @@ class RKNNMultiClassPostprocessTests(TestCase):
         detections = detector._postprocess_yolov8_heads(outputs, (640, 640), 1.0, (0.0, 0.0))
         self.assertEqual([item.label for item in detections], ["cell phone"])
 
+    def test_per_inference_threshold_override_recovers_roi_phone(self) -> None:
+        detector = object.__new__(RKNNYoloDetector)
+        detector.input_size = 640
+        detector.confidence_threshold = 0.35
+        detector.class_confidence_thresholds = {67: 0.20}
+        detector.nms_threshold = 0.45
+        detector.box_filter = {}
+        detector.class_names = {index: label for index, label in enumerate(COCO_CLASS_NAMES)}
+        detector.selected_class_ids = {0, 67}
+        outputs = []
+        for branch in range(3):
+            boxes = np.zeros((1, 64, 1, 1), dtype=np.float32)
+            classes = np.zeros((1, 80, 1, 1), dtype=np.float32)
+            auxiliary = np.zeros((1, 1, 1, 1), dtype=np.float32)
+            if branch == 0:
+                classes[0, 67, 0, 0] = 0.18
+            outputs.extend([boxes, classes, auxiliary])
+
+        default = detector._postprocess_yolov8_heads(outputs, (640, 640), 1.0, (0.0, 0.0))
+        refined = detector._postprocess_yolov8_heads(
+            outputs, (640, 640), 1.0, (0.0, 0.0), {67: 0.16}
+        )
+        self.assertEqual(default, [])
+        self.assertEqual([item.label for item in refined], ["cell phone"])
+
     def test_damoyolo_decodes_strict_pair_and_direct_resize(self) -> None:
         detector = _damo_detector()
         scores = np.zeros((1, 8400, 2), dtype=np.float32)

@@ -92,6 +92,12 @@ class PhoneBehaviorStateMachine:
             face,
             float(relation.get("max_face_distance_ratio") or 0.9),
         )
+        matched = matched and _adjacent_to_face(
+            phone.bbox,
+            face,
+            float(relation.get("max_horizontal_offset_ratio") or 1.0),
+            float(relation.get("max_vertical_offset_ratio") or 0.75),
+        )
         confidence = phone.confidence * (0.90 + 0.10 * relation_score) * (1.0 if real_face else 0.95)
         evidence = ["phone_near_detected_face" if real_face else "phone_near_estimated_head_region"] if matched else []
         return BehaviorSignal(
@@ -167,3 +173,18 @@ class PhoneBehaviorStateMachine:
 
 def _empty_signal(event_type: str, track: TrackedPerson) -> BehaviorSignal:
     return BehaviorSignal(event_type, track.track_id, False, 0.0, track.bbox, {}, ())
+
+
+def _adjacent_to_face(
+    phone_bbox: BBox,
+    face_bbox: BBox,
+    max_horizontal_offset_ratio: float,
+    max_vertical_offset_ratio: float,
+) -> bool:
+    phone_x = (phone_bbox[0] + phone_bbox[2]) * 0.5
+    phone_y = (phone_bbox[1] + phone_bbox[3]) * 0.5
+    face_width = max(1.0, face_bbox[2] - face_bbox[0])
+    face_height = max(1.0, face_bbox[3] - face_bbox[1])
+    horizontal = max(face_bbox[0] - phone_x, 0.0, phone_x - face_bbox[2]) / face_width
+    vertical = max(face_bbox[1] - phone_y, 0.0, phone_y - face_bbox[3]) / face_height
+    return horizontal <= max_horizontal_offset_ratio and vertical <= max_vertical_offset_ratio

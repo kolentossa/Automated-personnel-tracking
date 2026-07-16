@@ -85,6 +85,11 @@ stop_service() {
     printf 'behavior service is not supervised (empty PID file)\n'
     return
   fi
+  if [[ ! -d "/proc/$pid" ]]; then
+    : > "$PID_FILE"
+    printf 'cleared stale behavior supervisor PID: %s\n' "$pid"
+    return
+  fi
   if ! is_our_supervisor "$pid"; then
     printf 'PID %s does not belong to this project supervisor; refusing to kill it\n' "$pid" >&2
     return 1
