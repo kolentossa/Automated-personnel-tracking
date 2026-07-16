@@ -1,0 +1,52 @@
+name: Build RK3588 YOLO11 RKNN
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/rk3588-no-mosaic-accuracy
+    paths:
+      - .github/workflows/build-yolo11-rknn.yml
+      - scripts/build_yolo11_rknn_ci.sh
+
+permissions:
+  contents: read
+
+jobs:
+  build-rknn:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out project
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install RKNN Toolkit 2.3.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v2.3.0 \
+            https://github.com/airockchip/rknn-toolkit2.git "$RUNNER_TEMP/rknn-toolkit2"
+          python -m pip install --upgrade pip
+          python -m pip install \
+            -r "$RUNNER_TEMP/rknn-toolkit2/rknn-toolkit2/packages/x86_64/requirements_cp310-2.3.0.txt"
+          python -m pip install \
+            "$RUNNER_TEMP/rknn-toolkit2/rknn-toolkit2/packages/x86_64/rknn_toolkit2-2.3.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+
+      - name: Convert official YOLO11n ONNX to RK3588 INT8 RKNN
+        shell: bash
+        run: |
+          bash scripts/build_yolo11_rknn_ci.sh \
+            "$RUNNER_TEMP/yolo11-build" "$GITHUB_WORKSPACE/artifacts"
+
+      - name: Upload RKNN model and manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: yolo11n-rk3588-int8
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 7
