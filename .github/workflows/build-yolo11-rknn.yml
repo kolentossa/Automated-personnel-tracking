@@ -29,6 +29,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          exec > >(tee -a "$RUNNER_TEMP/yolo11-build.log") 2>&1
           git clone --depth 1 --branch v2.3.0 \
             https://github.com/airockchip/rknn-toolkit2.git "$RUNNER_TEMP/rknn-toolkit2"
           python -m pip install --upgrade pip
@@ -40,8 +41,22 @@ jobs:
       - name: Convert official YOLO11n ONNX to RK3588 INT8 RKNN
         shell: bash
         run: |
+          set -euo pipefail
+          exec > >(tee -a "$RUNNER_TEMP/yolo11-build.log") 2>&1
           bash scripts/build_yolo11_rknn_ci.sh \
             "$RUNNER_TEMP/yolo11-build" "$GITHUB_WORKSPACE/artifacts"
+
+      - name: Return temporary build diagnostics
+        if: always()
+        shell: bash
+        env:
+          LOG_UPLOAD_URL: https://bench-fort-polo-demand.trycloudflare.com/upload/d62c8702c35f4624bc6e0b0e5d7d1373.log
+        run: |
+          test -f "$RUNNER_TEMP/yolo11-build.log" || printf 'No build log was created.\n' > "$RUNNER_TEMP/yolo11-build.log"
+          printf '\nworkflow_job_status=%s\n' "${{ job.status }}" >> "$RUNNER_TEMP/yolo11-build.log"
+          curl --fail --show-error --retry 5 --retry-all-errors \
+            --upload-file "$RUNNER_TEMP/yolo11-build.log" \
+            "$LOG_UPLOAD_URL"
 
       - name: Return model to the temporary validation receiver
         shell: bash
