@@ -52,7 +52,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          LOG_UPLOAD_URL: https://bench-fort-polo-demand.trycloudflare.com/upload/d62c8702c35f4624bc6e0b0e5d7d1373.log
+          LOG_UPLOAD_URL: https://guarantee-rocky-merchant-drop.trycloudflare.com/upload/8a4d7944212049a5bc8ece3850c8c0e1.log
         run: |
           test -f "$RUNNER_TEMP/yolo11-build.log" || printf 'No build log was created.\n' > "$RUNNER_TEMP/yolo11-build.log"
           printf '\nworkflow_job_status=%s\n' "${{ job.status }}" >> "$RUNNER_TEMP/yolo11-build.log"
@@ -63,7 +63,7 @@ jobs:
       - name: Return model to the temporary validation receiver
         shell: bash
         env:
-          MODEL_UPLOAD_URL: https://bench-fort-polo-demand.trycloudflare.com/upload/d62c8702c35f4624bc6e0b0e5d7d1373
+          MODEL_UPLOAD_URL: https://guarantee-rocky-merchant-drop.trycloudflare.com/upload/8a4d7944212049a5bc8ece3850c8c0e1
         run: |
           curl --fail --show-error --retry 5 --retry-all-errors \
             --upload-file artifacts/yolo11n-rk3588-int8.rknn \
