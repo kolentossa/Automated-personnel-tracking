@@ -31,6 +31,70 @@
   "conversion_tool_version": "rknn-toolkit2 2.3.0",
   "runtime_version": "rknn-toolkit-lite2/librknnrt 2.3.0",
   "target_platform": "rk3588",
+  "runtime_detector_stack": {
+    "primary_person_phone": {
+      "model_name": "YOLOv8n COCO RKNN",
+      "model_family": "yolov8",
+      "deployment_path": "models/yolov8n.rknn",
+      "size_bytes": 5683348,
+      "sha256": "ff3a64e6fe180203128c8d42456b458d208d3a1e2217d63683af00d6194e82ea",
+      "classes_used": ["person", "cell phone"],
+      "license_note": "Ultralytics model terms apply; the binary is not redistributed in Git.",
+      "provenance_note": "Pre-existing project artifact; exact historical conversion lineage predates this feature."
+    },
+    "phone_context": {
+      "model_name": "Rockchip-optimized YOLO11n COCO INT8",
+      "model_family": "yolo11",
+      "source_model_zoo": "https://github.com/airockchip/rknn_model_zoo",
+      "source_model_zoo_ref": "v2.3.0",
+      "source_onnx_url": "https://ftrg.zbox.filez.com/v2/delivery/data/95f00b0fc900458ba134f8b180b3f7a1/examples/yolo11/yolo11n.onnx",
+      "source_onnx_size_bytes": 10527859,
+      "source_onnx_sha256": "62a3751662e06c678debb54b113c211d918f245ea6d3aea0b09fc418b8fc7705",
+      "source_pt_size_bytes": 5613764,
+      "source_pt_sha256": "0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1",
+      "deployment_path": "models/yolo11n.rknn",
+      "size_bytes": 4248267,
+      "sha256": "8853507c88c777f39e574b730abdd2a151be102830c570cee0fd31a6bb8010fc",
+      "quantization": "int8",
+      "classes_used": ["cell phone"],
+      "license_note": "Rockchip conversion code is Apache-2.0; Ultralytics model terms apply to the model."
+    },
+    "cigarette_behavior": {
+      "model_name": "DAMO-YOLO TinyNAS L25 S cigarette INT8",
+      "deployment_path": "models/behavior_damoyolo_cigarette_int8.rknn",
+      "size_bytes": 18883072,
+      "sha256": "d04c43a3a695c9985fbd03db1e0a2956763374fd686d949b8cd96cabdc7c5941",
+      "classes_used": ["cigarette"]
+    }
+  },
+  "private_validation": {
+    "images": 803,
+    "train_images": 267,
+    "tuning_images": 301,
+    "final_test_images": 235,
+    "manifest_sha256": "f7231d5d8f7a7264adf2ecca43ca9abd1500f4bda1b31be04079c9aeda277709",
+    "git_tracking": "Private images, videos, predictions, and manifests are ignored and not committed."
+  },
+  "final_accuracy": {
+    "phone": {
+      "true_positive": 43,
+      "false_positive": 19,
+      "false_negative": 24,
+      "precision": 0.6935,
+      "recall": 0.6418,
+      "f1": 0.6667
+    },
+    "confirmed_smoking": {
+      "true_positive": 21,
+      "false_positive": 0,
+      "false_negative": 90,
+      "precision": 1.0,
+      "recall": 0.1892,
+      "f1": 0.3182,
+      "baseline_false_positive": 4,
+      "true_recall_change_percentage_points": 0.0
+    }
+  },
   "expected_preprocess": {
     "color": "RGB",
     "runtime_layout": "NHWC uint8",

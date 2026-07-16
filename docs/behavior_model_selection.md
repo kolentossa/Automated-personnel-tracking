@@ -79,6 +79,44 @@ Machine-readable measurements are in
 `artifacts/behavior_model_validation.json`; binary details are in
 `models/behavior_model_manifest.json`.
 
+## Phone Detector Audit
+
+The existing project YOLOv8n COCO RKNN remains the primary person/phone model.
+Several alternatives were downloaded and measured rather than selected from
+model-card claims:
+
+| Candidate | Fixed source/license | Result and decision |
+| --- | --- | --- |
+| Ultralytics YOLOv8n COCO | Official Ultralytics asset; PT SHA `f59b3d833e2ff32e194b5bb8e08d211dc7c5bdf144b90d2c8412c47ccfc83b36`; AGPL-3.0 or enterprise license | Best precision/recall balance as the primary model. Existing RKNN SHA `ff3a64e6fe180203128c8d42456b458d208d3a1e2217d63683af00d6194e82ea`. |
+| Rockchip YOLO11n COCO | `rknn_model_zoo` tag `v2.3.0`; official ONNX SHA `62a3751662e06c678debb54b113c211d918f245ea6d3aea0b09fc418b8fc7705`; Rockchip scripts Apache-2.0, Ultralytics model terms apply | Slightly worse alone, but recovered additional call/context phones. Selected only for the scheduled upper-body context crop. RKNN SHA `8853507c88c777f39e574b730abdd2a151be102830c570cee0fd31a6bb8010fc`. |
+| IndUSV YOLOv8n mobile-phone | `IndUSV/yolov8n-mobile-phone` revision `297dae382bea800d4f946f8055bf58119ba4c24c`; MIT model card; PT SHA `9230e4bfa7cba7134215c4c7f228b5e58760b02138788ccaff0149258c2d2e19` | High apparent recall but catastrophic full-frame localization and 97.65% negative trigger rate at 0.10. Rejected. |
+| Ultralytics YOLOv8n OIV7 | Official Ultralytics v8.4 asset; PT SHA `3851dfbf39ed2a076b1f39215cc22dba64eb5646f282bf964703785b0bed6a41`; AGPL-3.0 or enterprise license | Mobile-phone recall only 6.06% at 0.10 on the initial fixed set. Rejected. |
+| maco018 in-car distraction YOLO26n classifier | `maco018/in-car-distraction-yolo26` revision `9a7677028d5b970999b790c996785c2d3356b36f`; AGPL-3.0; PT SHA `ed95ff184eacd22bab422d9b0770ccf582610c940ad49c6e4db0716d354aa71c` | Whole-cabin classifier with a different camera domain and no phone box. Rejected. |
+
+The selected hybrid uses no extra ROI count: one crop mode is scheduled per
+primary cycle. YOLOv8n handles head/shoulders at 0.12 and hands/torso at 0.20;
+YOLO11n handles upper-body context at 0.35. Results are cached for eight
+primary frames and deduplicated against full-frame detections.
+
+On the locked 235-image final set, the conservative YOLOv8 ROI baseline at
+0.20 measured precision 0.7255, recall 0.5522, and F1 0.6271. The deployed
+hybrid measured precision 0.6935, recall 0.6418, and F1 0.6667. Phone-call hits
+rose from 16/42 to 22/42. The precision tradeoff is bounded by person
+association, temporal behavior rules, and a maximum phone/person area ratio.
+
+## Phone RKNN Build
+
+`scripts/build_yolo11_rknn_ci.sh` pins `rknn_model_zoo` and Toolkit2 to
+`v2.3.0`, verifies the official ONNX SHA, and converts static batch-1 640x640
+INT8 for RK3588. The GitHub Actions workflow runs on x86 Ubuntu 22.04; model
+conversion is not attempted on the ARM board. The resulting 4,248,267-byte
+RKNN was loaded with Runtime 2.3.0 and driver 0.9.8 on the target.
+
+The pre-existing primary YOLOv8 RKNN binary is SHA-verified but its exact
+historical conversion provenance predates this feature. That lineage gap is
+documented rather than guessed; the new YOLO11 context model and DAMO behavior
+model have fully pinned reproducible conversions.
+
 ## Sources
 
 - ModelScope model: https://www.modelscope.cn/models/iic/cv_tinynas_object-detection_damoyolo_cigarette/summary
@@ -87,3 +125,8 @@ Machine-readable measurements are in
 - CigDet v1: https://data.mendeley.com/datasets/6hyrr8typ7/1
 - COCO128 archive: https://github.com/ultralytics/assets/releases/download/v0.0.0/coco128.zip
 - Wikimedia Commons: https://commons.wikimedia.org/
+- Rockchip RKNN Model Zoo: https://github.com/airockchip/rknn_model_zoo
+- Rockchip RKNN Toolkit2: https://github.com/airockchip/rknn-toolkit2
+- Ultralytics models: https://github.com/ultralytics/ultralytics
+- IndUSV phone detector: https://huggingface.co/IndUSV/yolov8n-mobile-phone
+- maco018 distraction classifier: https://huggingface.co/maco018/in-car-distraction-yolo26

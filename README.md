@@ -1,8 +1,9 @@
 # Automated Personnel Tracking System
 
-A local-first personnel tracking demo for the RK3588 LubanCat-5 v2. The system reads prerecorded video, detects anonymous person-like objects, tracks them across frames, counts virtual-line crossings, and exposes a local FastAPI service plus a responsive dashboard.
-
-The first demo does not require a USB camera. It generates a synthetic `data/sample.mp4` and runs the same camera, detection, tracking, counting, backend, and frontend flow that future camera sources will use.
+A local-first personnel and behavior tracking service for the RK3588
+LubanCat-5 v2. It reads a camera or prerecorded video, detects people, phones,
+and cigarettes on the NPU, tracks anonymous IDs, counts line crossings, and
+serves a FastAPI dashboard on the local network.
 
 ## Current Production Deployment
 
@@ -12,35 +13,40 @@ The optimized camera service is deployed on the RK3588 at:
 http://192.168.1.213:8001
 ```
 
-It reads `/dev/video11`, runs YOLOv8n person/phone detection and an INT8
-DAMO-YOLO cigarette detector on the RK3588 NPU, tracks anonymous person IDs,
-performs line-crossing and temporal behavior analysis, and applies RetinaFace
-plus optical-flow face mosaic before Web streaming or evidence persistence.
+It reads `/dev/video11`, runs YOLOv8n person/phone detection, a YOLO11n phone
+context model, and an INT8 DAMO-YOLO cigarette detector on the RK3588 NPU,
+tracks anonymous person IDs, and performs line-crossing plus temporal behavior
+analysis. This branch deliberately disables face detection and all mosaic:
+the Web stream and event evidence are unredacted. Use it only on a controlled
+LAN and never expose port 8001 to the public Internet.
 The legacy service on port `8000` has been retired and should remain stopped.
 
 Current measured operating point:
 
 ```text
 camera: /dev/video11
-steady Web FPS: approximately 27-30
-rolling application latency: approximately 23-32 ms
+steady Web FPS: approximately 27-29
+rolling application latency: approximately 25-38 ms
 detector: rknn-yolov8n
 npu_enabled: true
-face_detector: retinaface-mobile320-onnx
+phone_context_detector: rknn-yolo11n
 behavior_detector: rknn-damoyolo-cigarette-int8
 smoking_detection_available: true
+face_detection_enabled: false
+mosaic_enabled: false
+privacy_mode: no_mosaic
 ```
 
-The behavior-enabled 300-frame sequential benchmark measured 26.43 FPS,
-37.26 ms mean latency, 33.41 ms P50, and 92.79 ms P95. See
-`docs/rk3588_behavior_benchmark_results.md` for stage timings and measurement
+The final behavior-enabled 300-frame sequential benchmark measured 26.21 FPS,
+37.64 ms mean latency, 28.85 ms P50, and 97.98 ms P95. See
+`docs/rk3588_behavior_benchmark.md` for stage timings and measurement
 definitions.
 
-The final 30-minute supervised Web stability run measured 27.80 FPS average,
-32.3 ms P95 application latency, zero API/camera/process failures, and stable
-memory (RSS changed by -11.23 MB with a -0.812 MB/hour fitted slope). A
-low-frequency GC and glibc trim maintenance point prevents native buffers from
-accumulating when both RKNN models run in one process.
+The final 30-minute supervised Web stability run measured 28.118 FPS average,
+39.9 ms P95 application latency, zero API/camera/process failures, and stable
+memory. RSS changed by -20.528 MB; the fitted 6.886 MB/hour slope stayed well
+below the 64 MB/hour limit. Low-frequency GC and glibc trim maintenance keep
+native buffers bounded while the three RKNN model contexts share the NPU.
 
 The service runs under a project-local restart supervisor. No systemd unit or
 boot-time service is installed, so run
@@ -101,12 +107,17 @@ Expected path:
 /home/cat/projects/person-tracking/.venv/bin/python
 ```
 
-Download the Rockchip model-zoo RetinaFace model into the ignored `models/`
-directory. The downloader verifies the pinned SHA-256 before installing it:
+Install the three SHA-verified RKNN models in the ignored `models/` directory
+before starting the production service:
 
 ```bash
-.venv/bin/python scripts/download_face_model.py
+sha256sum models/yolov8n.rknn \
+  models/yolo11n.rknn \
+  models/behavior_damoyolo_cigarette_int8.rknn
 ```
+
+The expected hashes and reproducible behavior/YOLO11 conversion details are in
+`models/behavior_model_manifest.json`. No face model is required.
 
 ## Legacy Synthetic Demo
 
@@ -190,21 +201,20 @@ PERSON_TRACKING_MODEL=models/yolov8n.onnx ./scripts/run_demo.sh data/sample.mp4
 
 Training and fine tuning should stay on a workstation. The RK3588 should only run inference.
 
-## Privacy Design
+## Security And No-Mosaic Mode
 
-This project is designed for local, anonymous counting.
+This branch is local-only but is not visually anonymized.
 
-- All video processing runs locally on the RK3588.
-- No images, video frames, events, or metadata are uploaded to cloud services.
-- Raw camera video is not recorded by the backend.
-- The generated sample video is synthetic and contains no real people.
-- The system does not perform face recognition or biometric identification.
+- All inference runs on the RK3588; no cloud API is used.
+- Face recognition, biometric identification, ReID, embeddings, and identity
+  databases are not implemented.
 - Tracking IDs are temporary anonymous IDs, not real identities.
-- Crossing events contain only timestamp, event type, and temporary tracking
-  ID. Behavior events also include confidence, duration, related boxes, and
-  configured local evidence paths.
-- Frames are transient unless a behavior event requests privacy-mosaiced local
-  evidence. Unmasked camera frames are never persisted by default.
+- Face detection is disabled and no RetinaFace model is loaded.
+- Mosaic, blur, pixelation, and redaction are not called in the runtime path.
+- MJPEG frames, event snapshots, optional clips, and debug captures are
+  unredacted. Event evidence can therefore contain identifiable people.
+- Do not forward port 8001, place the service behind a public reverse proxy, or
+  commit anything under `data/behavior_events/`.
 
 Anonymous event example:
 
@@ -310,28 +320,17 @@ detection:
   input_size: 640
 
 privacy:
-  face_mosaic_enabled: true
-  face_detector: retinaface-onnx
-  face_model_path: models/RetinaFace_mobile320.onnx
-  face_input_size: 320
-  face_confidence_threshold: 0.6
-  face_detector_threads: 1
-  face_detect_every_n_frames: 5
-  face_result_max_age_ms: 1000
-  face_mosaic_padding: 0.25
-  face_tracking_enabled: true
-  face_tracking_min_points: 4
-  face_tracking_win_size: 31
-  face_tracking_max_level: 3
-  face_tracking_max_motion_px: 96
-  head_fallback_enabled: true
+  face_detection_enabled: false
+  mosaic_enabled: false
+  unredacted_video_enabled: true
+  unredacted_evidence_enabled: true
 ```
 
 The optimized RK3588 profile uses `performance.detect_every_n_frames: 3`,
 pins the process to big CPU cores `4-7`, reports a 30-frame rolling latency,
 and streams 800x450 JPEG frames at quality 74. Person inference runs at about
-10 Hz while tracking, privacy mosaic, video encoding, and Web streaming remain
-at the camera frame rate.
+10 Hz while tracking, drawing, video encoding, and Web streaming remain at the
+camera frame rate.
 
 `camera.source_type` can later be changed to `video`, using `camera.video_file`,
 to reuse the same detection/tracking/counting pipeline with a prerecorded file.
@@ -346,35 +345,17 @@ Detection uses the configured local detector path. The deployment path is
 MobileNetSSD or ONNX models. Motion fallback is disabled by default so moving
 non-person objects are not counted as people.
 
-Privacy behavior:
+No-mosaic runtime behavior:
 
-- Frames are processed locally on the RK3588.
-- Raw unmasked camera frames are not saved by the Web app. Behavior alerts can
-  save unannotated and annotated evidence only after face/head mosaic.
-- Mosaic anonymisation is applied before JPEG frames are sent to the browser.
-- Face recognition, identity recognition, ReID, embeddings, and face databases
-  are not used.
-- `RetinaFace_mobile320.onnx` performs real face detection asynchronously so
-  face inference cannot queue video frames or add directly to stream latency.
-- Sparse Lucas-Kanade optical flow propagates each detected face box on every
-  video frame. RetinaFace refreshes the boxes every five frames to correct
-  drift, and invalid optical-flow tracks immediately fall back to head mosaic.
-- `/api/health` and `/api/stats` expose `face_detector`,
-  `face_detector_available`, `faces_detected`, `face_detection_ms`,
-  `face_tracking_ms`, `face_tracked_boxes`, and `face_privacy_mode` for runtime
-  verification.
-- A person whose face is not detected still receives a conservative head-box
-  mosaic when `head_fallback_enabled` is true.
-
-Verify the detector against a known face image with:
-
-```bash
-.venv/bin/python scripts/test_face_privacy.py --image data/retinaface_test.jpg
-```
-
-The test fails unless RetinaFace returns a real face box, all changed pixels
-stay inside that box, and optical flow follows a 96-pixel synthetic movement
-without losing the mosaic. The test image is intentionally ignored by Git.
+- `face_detection_enabled`, `face_model_loaded`, and `mosaic_enabled` remain
+  `false` in `/api/health` and `/api/stats`.
+- `privacy_mode` is `no_mosaic`; `behavior_input_frame` is `raw`.
+- The service does not create a face worker, face queue, optical-flow tracker,
+  or mosaic operation. A missing RetinaFace file cannot degrade startup.
+- Phone and smoking geometry uses configurable regions estimated from the
+  person box; these regions are not face detections.
+- Web and event outputs are unredacted. Keep the service and ignored evidence
+  directory inside a controlled LAN environment.
 
 ### RK3588 IMX415 camera capture note
 
@@ -448,10 +429,10 @@ curl -X POST http://127.0.0.1:8001/api/config/counting \
 
 ### Phone and smoking behavior detection
 
-The feature branch `feature/rk3588-phone-smoking-detection` adds multi-class
-RKNN output, phone-to-person association, phone-call/phone-playing/restricted
-photography state machines, real cigarette evidence, asynchronous privacy-safe
-evidence, `/api/events`, RTSP input, and target-board benchmarks.
+The branch `feature/rk3588-no-mosaic-accuracy` keeps the original multi-class
+RKNN behavior pipeline and independently improves phone recall and cigarette
+false-positive rejection. Removing mosaic is a deployment choice; it is not
+the reason accuracy changed.
 
 The existing COCO YOLOv8n model supplies `person` and `cell phone` from one NPU
 inference. A separate Apache-2.0 ModelScope DAMO-YOLO checkpoint supplies real
@@ -461,37 +442,43 @@ every fifth frame, and is kept out of Git with the other model binaries. The
 tracked manifest records its source, fixed revision, license, class order,
 preprocessing contract, conversion toolchain, and hashes.
 
-Small-phone recall is tuned independently from person detection: the global and
-person thresholds remain `0.35`, while `cell phone` uses `0.20`. Phone behavior
-still requires person association, face/body geometry, temporal persistence,
-and cooldown, so lowering the phone class threshold does not admit weak person
-boxes. Short detector gaps are tolerated by the phone state machine.
+Small-phone recall is tuned independently from person detection. Full-frame
+person and phone confidence remains `0.35`; low thresholds are used only inside
+person-associated crops. Phone behavior still requires person association,
+estimated head/body geometry, temporal persistence, and cooldown. Short
+detector gaps are bridged by the phone cache and state machine.
 
-For back-facing, partially occluded, or small phones, the primary detector can
-run a second RKNN pass over an enlarged upper-body crop. This ROI pass uses the
-same verified YOLOv8n model, a phone-only `0.16` threshold, at most one largest
-person, and runs every second primary inference. Its result is cached for one
-primary interval and deduplicated against full-frame phone boxes. The crop is
-taken from the original camera frame: phone inference and behavior analysis run
-before face/head mosaic is applied to the Web output, so privacy masking cannot
-hide a phone from the detector.
+For back-facing, side-facing, partially occluded, or small phones, one ROI pass
+runs on the largest eligible person for each primary inference cycle. The
+scheduled crop modes are YOLOv8n head/shoulders at `0.12`, YOLOv8n hands/torso
+at `0.20`, and YOLO11n upper-body context at `0.35`. Results are deduplicated,
+cached for eight primary frames with confidence decay, and mapped back to the
+original frame. The final 235-image test measured phone precision 0.6935,
+recall 0.6418, and F1 0.6667; phone-call hits improved from 19/42 with the
+YOLOv8 RKNN crop baseline to 22/42 with the hybrid scheduler.
 
-Cigarette postprocessing uses `0.35` IoU NMS plus containment suppression to
-collapse nested boxes around one object. The deployed DAMO profile also rejects
-boxes with a side below 5 px, an aspect ratio above 4.0, or an area above 2.5%
-of the frame. These limits were selected from the RK3588 event history and are
-configurable under `models.behavior.box_filter`.
+Cigarette postprocessing uses class-aware `0.35` IoU NMS plus containment
+suppression to collapse nested boxes around one object. Raw candidates then
+pass person-size/location checks, phone IoA conflict at `0.48`, explicit tool
+conflict, and multi-frame continuity before they become verified cigarettes.
+On the locked 235-image final set, confirmed smoking false positives fell from
+4 to 0 while true-cigarette event recall stayed 0.1892 (21/111), a 0-point
+change. Phone-call, screwdriver, tool, pen, and elongated-object groups each
+produced zero confirmed smoking events.
 
 Production smoking alerts require the cigarette to be assigned to a person and
-near that person's detected or estimated mouth (or an associated hand) for the
-configured duration. Smoke, flame, and lighter labels are auxiliary only and
-cannot independently classify a person as smoking. A missing or invalid
-required behavior model produces an explicit health error; it is never replaced
-with fabricated or motion-based detections.
+near the configurable head/mouth proxy derived from that person's box for the
+configured duration. This proxy preserves hand-to-mouth evidence without any
+face detector. Smoke, flame, and lighter labels are auxiliary only and cannot
+independently classify a person as smoking. A missing or invalid required
+behavior model produces an explicit health error; it is never replaced with
+fabricated or motion-based detections.
 
 Model selection, conversion, and validation details:
 
 - `docs/behavior_model_selection.md`
+- `docs/cigarette_false_positive_analysis.md`
+- `docs/no_mosaic_accuracy_deployment.md`
 - `docs/behavior_model_build_environment.md`
 - `models/behavior_model_manifest.json`
 - `artifacts/behavior_model_validation.json`
@@ -501,12 +488,12 @@ performance instructions are documented in:
 
 - `docs/rk3588_behavior_detection.md`
 - `docs/rk3588_behavior_acceptance_checklist.md`
-- `docs/rk3588_behavior_benchmark_results.md`
+- `docs/rk3588_behavior_benchmark.md`
 
 Run all behavior and regression tests:
 
 ```bash
-python -m unittest discover -s tests -v
+python -m pytest -q
 ```
 
 Run the 300-frame RK3588 benchmark:
@@ -530,22 +517,30 @@ detector:
   model_family: yolov8
   input_size: 640
   confidence_threshold: 0.35
-  class_confidence_thresholds: {"person": 0.35, "cell phone": 0.20}
+  class_confidence_thresholds: {"person": 0.35, "cell phone": 0.35}
   nms_threshold: 0.45
   class_filter: ["person", "cell phone"]
   phone_roi_refinement:
     enabled: true
-    confidence_threshold: 0.16
-    detect_every_n_primary_frames: 2
+    confidence_threshold: 0.12
+    detect_every_n_primary_frames: 1
     max_people: 1
     min_person_height_px: 160
-    horizontal_expansion_ratio: 0.20
-    top_expansion_ratio: 0.04
-    upper_body_ratio: 0.90
-    cache_primary_frames: 1
+    crop_modes:
+      - {name: head_shoulders, detector: primary, confidence_threshold: 0.12}
+      - {name: hands_torso, detector: primary, confidence_threshold: 0.20}
+      - {name: upper_body_context, detector: context, confidence_threshold: 0.35}
+    cache_primary_frames: 8
+    cache_confidence_decay: 0.97
+    cache_min_confidence: 0.08
     max_phone_area_ratio: 0.25
     nms_threshold: 0.35
     containment_threshold: 0.70
+    context_model:
+      enabled: true
+      model_path: models/yolo11n.rknn
+      model_family: yolo11
+      class_filter: ["cell phone"]
   core_mask: "0_1_2"
   fallback_to_cpu: false
 ```
