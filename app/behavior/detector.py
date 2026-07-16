@@ -110,6 +110,8 @@ class BehaviorObjectDetector:
                 nms_threshold=float(self.config.get("nms_threshold") or 0.45),
                 class_filter=self.config.get("class_filter") or [],
                 class_names=self.config.get("class_names"),
+                class_confidence_thresholds=self.config.get("class_confidence_thresholds"),
+                box_filter=self.config.get("box_filter"),
                 core_mask=self.config.get("core_mask") or "2",
             )
             self.name = self._detector.name

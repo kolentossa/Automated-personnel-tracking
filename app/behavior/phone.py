@@ -92,7 +92,7 @@ class PhoneBehaviorStateMachine:
             face,
             float(relation.get("max_face_distance_ratio") or 0.9),
         )
-        confidence = phone.confidence * (0.72 + 0.28 * relation_score) * (1.0 if real_face else 0.9)
+        confidence = phone.confidence * (0.90 + 0.10 * relation_score) * (1.0 if real_face else 0.95)
         evidence = ["phone_near_detected_face" if real_face else "phone_near_estimated_head_region"] if matched else []
         return BehaviorSignal(
             event_type=event_type,
@@ -117,7 +117,7 @@ class PhoneBehaviorStateMachine:
         below, relation_score = phone_below_face(phone.bbox, face, track.bbox)
         near, _ = near_face(phone.bbox, face, float(self.config.get("phone_call", {}).get("max_face_distance_ratio") or 0.9))
         observed = below and not near
-        confidence = phone.confidence * (0.68 + 0.32 * relation_score) * (1.0 if real_face else 0.88)
+        confidence = phone.confidence * (0.88 + 0.12 * relation_score) * (1.0 if real_face else 0.94)
         evidence = ()
         if observed:
             evidence = (

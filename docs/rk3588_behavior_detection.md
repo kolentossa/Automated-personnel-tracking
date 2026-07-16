@@ -149,9 +149,10 @@ models:
     model_family: damoyolo
     input_size: 640
     confidence_threshold: 0.35
-    nms_threshold: 0.70
+    nms_threshold: 0.35
     class_names: {"0": "cigarette", "1": "__unused__"}
     class_filter: ["cigarette"]
+    box_filter: {"min_side_px":5,"max_aspect_ratio":4.0,"max_frame_area_ratio":0.025,"duplicate_containment_threshold":0.70}
     core_mask: "0_1_2"
     detect_every_n_frames: 5
     expected_sha256: d04c43a3a695c9985fbd03db1e0a2956763374fd686d949b8cd96cabdc7c5941
@@ -160,6 +161,10 @@ models:
 `class_names` must exactly match the training dataset order. A mismatched order
 will produce semantically wrong detections even when the tensor shapes are
 valid.
+
+The shape filter removes implausible thin-strip and oversized candidates before
+drawing or behavior association. Containment suppression complements IoU NMS by
+removing a smaller box nested inside a second box for the same cigarette.
 
 The primary detector remains controlled by `config.yaml` unless
 `models.primary.use_for_runtime: true` is set in the behavior config. This

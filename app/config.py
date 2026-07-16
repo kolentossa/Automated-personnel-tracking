@@ -45,6 +45,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "model_family": "yolov8",
         "input_size": 640,
         "confidence_threshold": 0.35,
+        "class_confidence_thresholds": {"person": 0.35, "cell phone": 0.20},
         "nms_threshold": 0.45,
         "class_filter": ["person", "cell phone"],
         "core_mask": "0_1_2",

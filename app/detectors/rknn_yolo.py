@@ -47,6 +47,8 @@ class RKNNYoloDetector:
         nms_threshold: float = 0.45,
         class_filter: Optional[Iterable[str]] = None,
         class_names: Optional[Any] = None,
+        class_confidence_thresholds: Optional[Dict[Any, float]] = None,
+        box_filter: Optional[Dict[str, Any]] = None,
         core_mask: Any = "0_1_2",
     ) -> None:
         try:
@@ -60,6 +62,10 @@ class RKNNYoloDetector:
         self.confidence_threshold = float(confidence_threshold)
         self.nms_threshold = float(nms_threshold)
         self.class_names = _normalise_class_names(class_names)
+        self.class_confidence_thresholds = _normalise_class_thresholds(
+            class_confidence_thresholds, self.class_names
+        )
+        self.box_filter = _normalise_box_filter(box_filter)
         self.class_filter = {str(item).strip().lower() for item in (class_filter or ["person"])}
         self.selected_class_ids = {
             class_id
@@ -146,7 +152,14 @@ class RKNNYoloDetector:
             confidences.append(float(score))
             class_ids.append(int(class_id))
 
-        keep = _class_aware_nms(boxes_xywh, confidences, class_ids, self.confidence_threshold, self.nms_threshold)
+        keep = _class_aware_nms(
+            boxes_xywh,
+            confidences,
+            class_ids,
+            self.confidence_threshold,
+            self.nms_threshold,
+            getattr(self, "class_confidence_thresholds", {}),
+        )
         detections = [
             Detection(boxes_xyxy[index], confidences[index], class_ids[index], self.class_names[class_ids[index]])
             for index in keep
@@ -186,7 +199,7 @@ class RKNNYoloDetector:
         selected_class_ids: List[np.ndarray] = []
         for class_id in sorted(self.selected_class_ids):
             class_scores = scores[0, :, class_id]
-            indexes = np.where(class_scores >= self.confidence_threshold)[0]
+            indexes = np.where(class_scores >= self._threshold_for_class(class_id))[0]
             if indexes.size == 0:
                 continue
             selected_boxes.append(boxes[0, indexes])
@@ -210,9 +223,8 @@ class RKNNYoloDetector:
         candidate_boxes[:, [1, 3]] *= float(height) / float(self.input_size)
         candidate_boxes[:, [0, 2]] = np.clip(candidate_boxes[:, [0, 2]], 0.0, float(width))
         candidate_boxes[:, [1, 3]] = np.clip(candidate_boxes[:, [1, 3]], 0.0, float(height))
-        valid = (candidate_boxes[:, 2] > candidate_boxes[:, 0]) & (
-            candidate_boxes[:, 3] > candidate_boxes[:, 1]
-        )
+        box_filter = getattr(self, "box_filter", {})
+        valid = _box_filter_mask(candidate_boxes, width, height, box_filter)
         candidate_boxes = candidate_boxes[valid]
         candidate_scores = candidate_scores[valid]
         candidate_class_ids = candidate_class_ids[valid]
@@ -221,7 +233,10 @@ class RKNNYoloDetector:
         for class_id in np.unique(candidate_class_ids):
             indexes = np.where(candidate_class_ids == class_id)[0]
             class_keep = _nms_xyxy(
-                candidate_boxes[indexes], candidate_scores[indexes], self.nms_threshold
+                candidate_boxes[indexes],
+                candidate_scores[indexes],
+                self.nms_threshold,
+                box_filter.get("duplicate_containment_threshold"),
             )
             keep.extend(int(indexes[index]) for index in class_keep)
         keep.sort(key=lambda index: float(candidate_scores[index]), reverse=True)
@@ -263,7 +278,7 @@ class RKNNYoloDetector:
                 if class_id >= class_tensor.shape[1]:
                     continue
                 class_map = class_tensor[0, class_id]
-                ys, xs = np.where(class_map >= self.confidence_threshold)
+                ys, xs = np.where(class_map >= self._threshold_for_class(class_id))
                 if ys.size == 0:
                     continue
                 scores = class_map[ys, xs].astype(np.float32, copy=False)
@@ -286,7 +301,8 @@ class RKNNYoloDetector:
 
         height, width = int(frame_shape[0]), int(frame_shape[1])
         boxes_xyxy = _scale_boxes_from_letterbox(boxes, ratio, pad, width, height)
-        valid = (boxes_xyxy[:, 2] > boxes_xyxy[:, 0]) & (boxes_xyxy[:, 3] > boxes_xyxy[:, 1])
+        box_filter = getattr(self, "box_filter", {})
+        valid = _box_filter_mask(boxes_xyxy, width, height, box_filter)
         if not np.any(valid):
             return []
         boxes_xyxy = boxes_xyxy[valid]
@@ -296,7 +312,12 @@ class RKNNYoloDetector:
         keep: List[int] = []
         for class_id in np.unique(class_ids):
             indexes = np.where(class_ids == class_id)[0]
-            class_keep = _nms_xyxy(boxes_xyxy[indexes], scores[indexes], self.nms_threshold)
+            class_keep = _nms_xyxy(
+                boxes_xyxy[indexes],
+                scores[indexes],
+                self.nms_threshold,
+                box_filter.get("duplicate_containment_threshold"),
+            )
             keep.extend(int(indexes[index]) for index in class_keep)
         keep.sort(key=lambda index: float(scores[index]), reverse=True)
         detections = [Detection(
@@ -335,7 +356,7 @@ class RKNNYoloDetector:
             class_id = int(np.argmax(class_scores))
             score = float(class_scores[class_id])
 
-        if class_id not in self.selected_class_ids or score < self.confidence_threshold:
+        if class_id not in self.selected_class_ids or score < self._threshold_for_class(class_id):
             return None
 
         coords = values[:4].astype(np.float32)
@@ -351,6 +372,10 @@ class RKNNYoloDetector:
             x2 = cx + bw / 2.0
             y2 = cy + bh / 2.0
         return x1, y1, x2, y2, score, class_id
+
+    def _threshold_for_class(self, class_id: int) -> float:
+        thresholds = getattr(self, "class_confidence_thresholds", {})
+        return float(thresholds.get(int(class_id), self.confidence_threshold))
 
 
 def _preprocess(frame: np.ndarray, input_size: int) -> Tuple[np.ndarray, float, Tuple[float, float]]:
@@ -493,7 +518,12 @@ def _scale_boxes_from_letterbox(
     return scaled
 
 
-def _nms_xyxy(boxes: np.ndarray, scores: np.ndarray, nms_threshold: float) -> List[int]:
+def _nms_xyxy(
+    boxes: np.ndarray,
+    scores: np.ndarray,
+    nms_threshold: float,
+    containment_threshold: Optional[float] = None,
+) -> List[int]:
     if boxes.size == 0:
         return []
     x1 = boxes[:, 0]
@@ -516,7 +546,12 @@ def _nms_xyxy(boxes: np.ndarray, scores: np.ndarray, nms_threshold: float) -> Li
         inter = np.maximum(0.0, xx2 - xx1) * np.maximum(0.0, yy2 - yy1)
         union = areas[current] + areas[rest] - inter
         iou = np.divide(inter, union, out=np.zeros_like(inter), where=union > 0)
-        order = rest[iou <= nms_threshold]
+        duplicate = iou > nms_threshold
+        if containment_threshold is not None:
+            smaller = np.minimum(areas[current], areas[rest])
+            containment = np.divide(inter, smaller, out=np.zeros_like(inter), where=smaller > 0)
+            duplicate |= containment >= float(containment_threshold)
+        order = rest[~duplicate]
     return keep
 
 
@@ -535,6 +570,7 @@ def _class_aware_nms(
     class_ids: List[int],
     score_threshold: float,
     nms_threshold: float,
+    class_score_thresholds: Optional[Dict[int, float]] = None,
 ) -> List[int]:
     keep: List[int] = []
     for class_id in sorted(set(class_ids)):
@@ -542,7 +578,7 @@ def _class_aware_nms(
         selected = _nms(
             [boxes[index] for index in indexes],
             [confidences[index] for index in indexes],
-            score_threshold,
+            float((class_score_thresholds or {}).get(class_id, score_threshold)),
             nms_threshold,
         )
         keep.extend(indexes[index] for index in selected)
@@ -562,6 +598,78 @@ def _normalise_class_names(value: Optional[Any]) -> Dict[int, str]:
     if not result or any(not label for label in result.values()):
         raise ValueError("class_names must contain non-empty labels")
     return result
+
+
+def _normalise_class_thresholds(
+    value: Optional[Dict[Any, float]], class_names: Dict[int, str]
+) -> Dict[int, float]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise TypeError("class_confidence_thresholds must be a class-id or label mapping")
+    labels = {label.strip().lower(): class_id for class_id, label in class_names.items()}
+    result: Dict[int, float] = {}
+    for key, raw_threshold in value.items():
+        text = str(key).strip()
+        if text.lstrip("-").isdigit():
+            class_id = int(text)
+        else:
+            class_id = labels.get(text.lower(), -1)
+        if class_id not in class_names:
+            raise ValueError(f"Unknown class_confidence_thresholds key: {key}")
+        threshold = float(raw_threshold)
+        if not 0.0 <= threshold <= 1.0:
+            raise ValueError(f"Class confidence threshold must be between 0 and 1: {key}")
+        result[class_id] = threshold
+    return result
+
+
+def _normalise_box_filter(value: Optional[Dict[str, Any]]) -> Dict[str, float]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise TypeError("box_filter must be a mapping")
+    result: Dict[str, float] = {}
+    limits = {
+        "min_side_px": (0.0, None),
+        "max_aspect_ratio": (1.0, None),
+        "max_frame_area_ratio": (0.0, 1.0),
+        "duplicate_containment_threshold": (0.0, 1.0),
+    }
+    for key, raw_value in value.items():
+        if key not in limits:
+            raise ValueError(f"Unknown box_filter option: {key}")
+        number = float(raw_value)
+        minimum, maximum = limits[key]
+        if number < minimum or (maximum is not None and number > maximum):
+            raise ValueError(f"box_filter.{key} is outside the supported range")
+        result[key] = number
+    return result
+
+
+def _box_filter_mask(
+    boxes: np.ndarray, frame_width: int, frame_height: int, config: Dict[str, float]
+) -> np.ndarray:
+    if boxes.size == 0:
+        return np.zeros((0,), dtype=bool)
+    widths = np.maximum(0.0, boxes[:, 2] - boxes[:, 0])
+    heights = np.maximum(0.0, boxes[:, 3] - boxes[:, 1])
+    valid = (widths > 0.0) & (heights > 0.0)
+    min_side = float(config.get("min_side_px", 0.0))
+    if min_side > 0.0:
+        valid &= np.minimum(widths, heights) >= min_side
+    max_aspect = config.get("max_aspect_ratio")
+    if max_aspect is not None:
+        aspect = np.maximum(
+            np.divide(widths, heights, out=np.full_like(widths, np.inf), where=heights > 0),
+            np.divide(heights, widths, out=np.full_like(heights, np.inf), where=widths > 0),
+        )
+        valid &= aspect <= float(max_aspect)
+    max_area_ratio = config.get("max_frame_area_ratio")
+    if max_area_ratio is not None:
+        frame_area = max(1.0, float(frame_width) * float(frame_height))
+        valid &= (widths * heights) / frame_area <= float(max_area_ratio)
+    return valid
 
 
 def _resolve_core_mask(rknn_lite_class: Any, value: Any) -> Optional[Any]:

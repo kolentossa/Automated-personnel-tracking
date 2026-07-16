@@ -89,6 +89,12 @@ class BehaviorEngineScenarioTests(TestCase):
         self.assertEqual(len(calls), 1)
         self.assertIn("phone_near_detected_face", calls[0].evidence)
 
+    def test_low_confidence_phone_call_survives_geometric_validation(self) -> None:
+        engine = BehaviorEngine(self.config)
+        phone = Detection((205, 145, 230, 185), 0.22, 67, "cell phone")
+        events = _run(engine, self.track, [phone], [self.face], (0, 50, 100, 150, 200))
+        self.assertTrue(any(event.event_type == "phone_call" for event in events))
+
     def test_phone_playing_triggers(self) -> None:
         engine = BehaviorEngine(self.config)
         phone = Detection((175, 300, 210, 345), 0.9, 67, "cell phone")

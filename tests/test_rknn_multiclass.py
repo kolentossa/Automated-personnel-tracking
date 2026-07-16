@@ -15,6 +15,8 @@ class RKNNMultiClassPostprocessTests(TestCase):
         detector.input_size = 640
         detector.confidence_threshold = 0.35
         detector.nms_threshold = 0.45
+        detector.class_confidence_thresholds = {}
+        detector.box_filter = {}
         detector.class_names = {index: label for index, label in enumerate(COCO_CLASS_NAMES)}
         detector.selected_class_ids = {0, 67}
 
@@ -31,6 +33,29 @@ class RKNNMultiClassPostprocessTests(TestCase):
         detections = detector._postprocess_yolov8_heads(outputs, (640, 640), 1.0, (0.0, 0.0))
         self.assertIsNotNone(detections)
         self.assertEqual({item.label for item in detections}, {"person", "cell phone"})
+
+    def test_class_specific_threshold_recovers_weak_phone_without_weak_person(self) -> None:
+        detector = object.__new__(RKNNYoloDetector)
+        detector.input_size = 640
+        detector.confidence_threshold = 0.35
+        detector.class_confidence_thresholds = {67: 0.20}
+        detector.nms_threshold = 0.45
+        detector.box_filter = {}
+        detector.class_names = {index: label for index, label in enumerate(COCO_CLASS_NAMES)}
+        detector.selected_class_ids = {0, 67}
+
+        outputs = []
+        for branch in range(3):
+            boxes = np.zeros((1, 64, 1, 1), dtype=np.float32)
+            classes = np.zeros((1, 80, 1, 1), dtype=np.float32)
+            auxiliary = np.zeros((1, 1, 1, 1), dtype=np.float32)
+            if branch == 0:
+                classes[0, 0, 0, 0] = 0.34
+                classes[0, 67, 0, 0] = 0.22
+            outputs.extend([boxes, classes, auxiliary])
+
+        detections = detector._postprocess_yolov8_heads(outputs, (640, 640), 1.0, (0.0, 0.0))
+        self.assertEqual([item.label for item in detections], ["cell phone"])
 
     def test_damoyolo_decodes_strict_pair_and_direct_resize(self) -> None:
         detector = _damo_detector()
@@ -65,6 +90,31 @@ class RKNNMultiClassPostprocessTests(TestCase):
         with self.assertRaisesRegex(ValueError, "scores shape mismatch"):
             detector._postprocess_damoyolo([scores, boxes], (640, 640))
 
+    def test_damoyolo_filters_elongated_false_positive(self) -> None:
+        detector = _damo_detector()
+        detector.box_filter = {"max_aspect_ratio": 4.0}
+        scores = np.zeros((1, 8400, 2), dtype=np.float32)
+        boxes = np.zeros((1, 8400, 4), dtype=np.float32)
+        scores[0, 12, 0] = 0.92
+        boxes[0, 12] = [40.0, 100.0, 600.0, 130.0]
+
+        self.assertEqual(detector._postprocess_damoyolo([scores, boxes], (640, 640)), [])
+
+    def test_damoyolo_suppresses_nested_duplicate_boxes(self) -> None:
+        detector = _damo_detector()
+        detector.nms_threshold = 0.35
+        detector.box_filter = {"duplicate_containment_threshold": 0.70}
+        scores = np.zeros((1, 8400, 2), dtype=np.float32)
+        boxes = np.zeros((1, 8400, 4), dtype=np.float32)
+        scores[0, 12, 0] = 0.92
+        scores[0, 13, 0] = 0.81
+        boxes[0, 12] = [100.0, 100.0, 220.0, 220.0]
+        boxes[0, 13] = [130.0, 130.0, 170.0, 170.0]
+
+        detections = detector._postprocess_damoyolo([scores, boxes], (640, 640))
+        self.assertEqual(len(detections), 1)
+        self.assertAlmostEqual(detections[0].confidence, 0.92, places=5)
+
 
 class TargetAssociationTests(TestCase):
     def test_phone_is_assigned_to_nearest_person_only(self) -> None:
@@ -83,6 +133,8 @@ def _damo_detector() -> RKNNYoloDetector:
     detector.input_size = 640
     detector.confidence_threshold = 0.35
     detector.nms_threshold = 0.70
+    detector.class_confidence_thresholds = {}
+    detector.box_filter = {}
     detector.class_names = {0: "cigarette", 1: "__unused__"}
     detector.selected_class_ids = {0}
     return detector

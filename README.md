@@ -461,6 +461,18 @@ every fifth frame, and is kept out of Git with the other model binaries. The
 tracked manifest records its source, fixed revision, license, class order,
 preprocessing contract, conversion toolchain, and hashes.
 
+Small-phone recall is tuned independently from person detection: the global and
+person thresholds remain `0.35`, while `cell phone` uses `0.20`. Phone behavior
+still requires person association, face/body geometry, temporal persistence,
+and cooldown, so lowering the phone class threshold does not admit weak person
+boxes. Short detector gaps are tolerated by the phone state machine.
+
+Cigarette postprocessing uses `0.35` IoU NMS plus containment suppression to
+collapse nested boxes around one object. The deployed DAMO profile also rejects
+boxes with a side below 5 px, an aspect ratio above 4.0, or an area above 2.5%
+of the frame. These limits were selected from the RK3588 event history and are
+configurable under `models.behavior.box_filter`.
+
 Production smoking alerts require the cigarette to be assigned to a person and
 near that person's detected or estimated mouth (or an associated hand) for the
 configured duration. Smoke, flame, and lighter labels are auxiliary only and
@@ -509,6 +521,7 @@ detector:
   model_family: yolov8
   input_size: 640
   confidence_threshold: 0.35
+  class_confidence_thresholds: {"person": 0.35, "cell phone": 0.20}
   nms_threshold: 0.45
   class_filter: ["person", "cell phone"]
   core_mask: "0_1_2"
