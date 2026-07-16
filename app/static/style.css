@@ -21,6 +21,8 @@ h1 { font-size: 1.8rem; letter-spacing: 0; }
 .status-pill { min-width: 124px; text-align: center; border: 1px solid var(--line); border-radius: 999px; padding: 9px 14px; background: var(--surface); font-weight: 700; color: var(--amber); }
 .status-pill.online { color: var(--green); }
 .status-pill.error { color: var(--red); }
+.privacy-warning { margin-top: 14px; padding: 12px 14px; border: 1px solid #d89a9a; border-left: 5px solid var(--red); background: #fff4f4; color: #742d2d; display: flex; flex-wrap: wrap; gap: 6px 12px; line-height: 1.45; }
+.privacy-warning span { font-weight: 700; }
 .layout { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(360px, 0.75fr); gap: 16px; margin-top: 18px; }
 .video-panel, .stats-panel { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 12px 28px rgba(31, 39, 45, 0.08); }
 .video-panel { padding: 10px; }

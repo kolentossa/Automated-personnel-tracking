@@ -14,15 +14,17 @@ class SmokingBehaviorTests(TestCase):
         machine = _machine()
         detections = [Detection((80, 230, 90, 240), 0.85, 0, "cigarette")]
 
-        self.assertEqual(machine.update([self.track], detections, [], (300, 200), 0), [])
+        self.assertEqual(machine.update([self.track], detections, (300, 200), 0), [])
         self.assertEqual(machine.snapshot()["active_candidate_count"], 0)
 
     def test_cigarette_near_mouth_triggers_after_temporal_rule(self) -> None:
         machine = _machine()
         detections = [Detection((90, 55, 100, 65), 0.85, 0, "cigarette")]
 
-        self.assertEqual(machine.update([self.track], detections, [], (300, 200), 0), [])
-        triggers = machine.update([self.track], detections, [], (300, 200), 1)
+        self.assertEqual(machine.update([self.track], detections, (300, 200), 0), [])
+        triggers = machine.update(
+            [self.track], detections, (300, 200), 1, frame_index=1
+        )
 
         self.assertEqual(len(triggers), 1)
         self.assertIn("cigarette_near_mouth", triggers[0].evidence)
@@ -34,8 +36,10 @@ class SmokingBehaviorTests(TestCase):
             Detection((80, 230, 90, 240), 0.8, 0, "cigarette"),
         ]
 
-        machine.update([self.track], detections, [], (300, 200), 0)
-        triggers = machine.update([self.track], detections, [], (300, 200), 1)
+        machine.update([self.track], detections, (300, 200), 0)
+        triggers = machine.update(
+            [self.track], detections, (300, 200), 1, frame_index=1
+        )
 
         self.assertEqual(len(triggers), 1)
         self.assertIn("direct_smoking_model_output", triggers[0].evidence)
@@ -47,8 +51,10 @@ class SmokingBehaviorTests(TestCase):
             Detection((95, 65, 110, 80), 0.9, 3, "lighter"),
         ]
 
-        self.assertEqual(machine.update([self.track], detections, [], (300, 200), 0), [])
-        self.assertEqual(machine.update([self.track], detections, [], (300, 200), 1), [])
+        self.assertEqual(machine.update([self.track], detections, (300, 200), 0), [])
+        self.assertEqual(
+            machine.update([self.track], detections, (300, 200), 1, frame_index=1), []
+        )
 
 
 def _machine() -> SmokingBehaviorStateMachine:
@@ -63,6 +69,10 @@ def _machine() -> SmokingBehaviorStateMachine:
             "rearm_absence_ms": 100,
             "max_mouth_distance_ratio": 1.1,
             "allow_persistent_cigarette": False,
+            "cigarette_raw_confidence": 0.2,
+            "cigarette_verified_confidence": 0.2,
+            "minimum_verified_frames": 1,
+            "temporal_window_frames": 5,
         },
         {},
         {"person_expansion_ratio": 0.12, "stale_track_ms": 1000},

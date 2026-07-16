@@ -13,16 +13,86 @@ from vision.types import Detection, Frame
 
 
 COCO_CLASS_NAMES = (
-    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
-    "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog",
-    "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella",
-    "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball", "kite",
-    "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle",
-    "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich",
-    "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
-    "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote",
-    "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "book",
-    "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush",
+    "person",
+    "bicycle",
+    "car",
+    "motorcycle",
+    "airplane",
+    "bus",
+    "train",
+    "truck",
+    "boat",
+    "traffic light",
+    "fire hydrant",
+    "stop sign",
+    "parking meter",
+    "bench",
+    "bird",
+    "cat",
+    "dog",
+    "horse",
+    "sheep",
+    "cow",
+    "elephant",
+    "bear",
+    "zebra",
+    "giraffe",
+    "backpack",
+    "umbrella",
+    "handbag",
+    "tie",
+    "suitcase",
+    "frisbee",
+    "skis",
+    "snowboard",
+    "sports ball",
+    "kite",
+    "baseball bat",
+    "baseball glove",
+    "skateboard",
+    "surfboard",
+    "tennis racket",
+    "bottle",
+    "wine glass",
+    "cup",
+    "fork",
+    "knife",
+    "spoon",
+    "bowl",
+    "banana",
+    "apple",
+    "sandwich",
+    "orange",
+    "broccoli",
+    "carrot",
+    "hot dog",
+    "pizza",
+    "donut",
+    "cake",
+    "chair",
+    "couch",
+    "potted plant",
+    "bed",
+    "dining table",
+    "toilet",
+    "tv",
+    "laptop",
+    "mouse",
+    "remote",
+    "keyboard",
+    "cell phone",
+    "microwave",
+    "oven",
+    "toaster",
+    "sink",
+    "refrigerator",
+    "book",
+    "clock",
+    "vase",
+    "scissors",
+    "teddy bear",
+    "hair drier",
+    "toothbrush",
 )
 DAMO_FAMILIES = {"damoyolo", "damo-yolo", "damo_yolo"}
 
@@ -42,7 +112,7 @@ class RKNNYoloDetector:
         model_path: Path,
         *,
         model_family: str = "yolov8",
-        input_size: int = 640,
+        input_size: Any = 640,
         confidence_threshold: float = 0.35,
         nms_threshold: float = 0.45,
         class_filter: Optional[Iterable[str]] = None,
@@ -58,7 +128,12 @@ class RKNNYoloDetector:
 
         self.model_path = Path(model_path)
         self.model_family = str(model_family or "yolov8").lower()
-        self.input_size = int(input_size)
+        self.input_height, self.input_width = _normalise_input_shape(input_size)
+        self.input_size = (
+            self.input_width
+            if self.input_height == self.input_width
+            else (self.input_height, self.input_width)
+        )
         self.confidence_threshold = float(confidence_threshold)
         self.nms_threshold = float(nms_threshold)
         self.class_names = _normalise_class_names(class_names)
@@ -66,14 +141,18 @@ class RKNNYoloDetector:
             class_confidence_thresholds, self.class_names
         )
         self.box_filter = _normalise_box_filter(box_filter)
-        self.class_filter = {str(item).strip().lower() for item in (class_filter or ["person"])}
+        self.class_filter = {
+            str(item).strip().lower() for item in (class_filter or ["person"])
+        }
         self.selected_class_ids = {
             class_id
             for class_id, label in self.class_names.items()
             if not self.class_filter or label.lower() in self.class_filter
         }
         if self.class_filter and not self.selected_class_ids:
-            raise ValueError(f"class_filter does not match class_names: {sorted(self.class_filter)}")
+            raise ValueError(
+                f"class_filter does not match class_names: {sorted(self.class_filter)}"
+            )
         self.last_profile: Dict[str, float] = _empty_profile()
         self.npu_enabled = False
         self.name = _detector_name(self.model_path, self.model_family)
@@ -81,7 +160,9 @@ class RKNNYoloDetector:
 
         ret = self._rknn.load_rknn(str(self.model_path))
         if ret != 0:
-            raise RuntimeError(f"RKNN load_rknn failed with code {ret}: {self.model_path}")
+            raise RuntimeError(
+                f"RKNN load_rknn failed with code {ret}: {self.model_path}"
+            )
 
         resolved_core_mask = _resolve_core_mask(RKNNLite, core_mask)
         if resolved_core_mask is not None:
@@ -145,7 +226,7 @@ class RKNNYoloDetector:
         if model_zoo_detections is not None:
             return model_zoo_detections
 
-        rows = _rows_from_outputs(outputs)
+        rows = _rows_from_outputs(outputs, len(self.class_names))
         height, width = int(frame_shape[0]), int(frame_shape[1])
         boxes_xywh: List[List[int]] = []
         boxes_xyxy: List[Tuple[float, float, float, float]] = []
@@ -157,11 +238,20 @@ class RKNNYoloDetector:
             if decoded is None:
                 continue
             x1, y1, x2, y2, score, class_id = decoded
-            x1, y1, x2, y2 = _scale_box_from_letterbox((x1, y1, x2, y2), ratio, pad, width, height)
+            x1, y1, x2, y2 = _scale_box_from_letterbox(
+                (x1, y1, x2, y2), ratio, pad, width, height
+            )
             if x2 <= x1 or y2 <= y1:
                 continue
             boxes_xyxy.append((x1, y1, x2, y2))
-            boxes_xywh.append([int(round(x1)), int(round(y1)), int(round(x2 - x1)), int(round(y2 - y1))])
+            boxes_xywh.append(
+                [
+                    int(round(x1)),
+                    int(round(y1)),
+                    int(round(x2 - x1)),
+                    int(round(y2 - y1)),
+                ]
+            )
             confidences.append(float(score))
             class_ids.append(int(class_id))
 
@@ -176,7 +266,12 @@ class RKNNYoloDetector:
             effective_thresholds,
         )
         detections = [
-            Detection(boxes_xyxy[index], confidences[index], class_ids[index], self.class_names[class_ids[index]])
+            Detection(
+                boxes_xyxy[index],
+                confidences[index],
+                class_ids[index],
+                self.class_names[class_ids[index]],
+            )
             for index in keep
         ]
         detections.sort(key=lambda item: item.confidence, reverse=True)
@@ -190,10 +285,15 @@ class RKNNYoloDetector:
     ) -> List[Detection]:
         if not isinstance(outputs, (list, tuple)) or len(outputs) != 2:
             count = len(outputs) if isinstance(outputs, (list, tuple)) else 0
-            raise ValueError(f"DAMO-YOLO output count mismatch: expected 2, got {count}")
+            raise ValueError(
+                f"DAMO-YOLO output count mismatch: expected 2, got {count}"
+            )
         scores = _as_float32(outputs[0])
         boxes = _as_float32(outputs[1])
-        expected_predictions = sum((self.input_size // stride) ** 2 for stride in (8, 16, 32))
+        input_height, input_width = _detector_input_shape(self)
+        expected_predictions = sum(
+            (input_height // stride) * (input_width // stride) for stride in (8, 16, 32)
+        )
         expected_classes = len(self.class_names)
         expected_scores = (1, expected_predictions, expected_classes)
         expected_boxes = (1, expected_predictions, 4)
@@ -206,7 +306,9 @@ class RKNNYoloDetector:
                 f"DAMO-YOLO boxes shape mismatch: expected {expected_boxes}, got {tuple(boxes.shape)}"
             )
         if set(self.class_names) != set(range(expected_classes)):
-            raise ValueError("DAMO-YOLO class_names must use contiguous IDs starting at zero")
+            raise ValueError(
+                "DAMO-YOLO class_names must use contiguous IDs starting at zero"
+            )
         if not np.isfinite(scores).all() or not np.isfinite(boxes).all():
             raise ValueError("DAMO-YOLO outputs contain NaN or infinity")
 
@@ -226,21 +328,31 @@ class RKNNYoloDetector:
         if not selected_boxes:
             return []
 
-        candidate_boxes = np.concatenate(selected_boxes, axis=0).astype(np.float32, copy=True)
-        candidate_scores = np.concatenate(selected_scores, axis=0).astype(np.float32, copy=False)
+        candidate_boxes = np.concatenate(selected_boxes, axis=0).astype(
+            np.float32, copy=True
+        )
+        candidate_scores = np.concatenate(selected_scores, axis=0).astype(
+            np.float32, copy=False
+        )
         candidate_class_ids = np.concatenate(selected_class_ids, axis=0)
         if candidate_scores.size > self.MAX_CANDIDATES:
-            top = np.argpartition(candidate_scores, -self.MAX_CANDIDATES)[-self.MAX_CANDIDATES :]
+            top = np.argpartition(candidate_scores, -self.MAX_CANDIDATES)[
+                -self.MAX_CANDIDATES :
+            ]
             order = top[np.argsort(candidate_scores[top])[::-1]]
             candidate_boxes = candidate_boxes[order]
             candidate_scores = candidate_scores[order]
             candidate_class_ids = candidate_class_ids[order]
 
         height, width = int(frame_shape[0]), int(frame_shape[1])
-        candidate_boxes[:, [0, 2]] *= float(width) / float(self.input_size)
-        candidate_boxes[:, [1, 3]] *= float(height) / float(self.input_size)
-        candidate_boxes[:, [0, 2]] = np.clip(candidate_boxes[:, [0, 2]], 0.0, float(width))
-        candidate_boxes[:, [1, 3]] = np.clip(candidate_boxes[:, [1, 3]], 0.0, float(height))
+        candidate_boxes[:, [0, 2]] *= float(width) / float(input_width)
+        candidate_boxes[:, [1, 3]] *= float(height) / float(input_height)
+        candidate_boxes[:, [0, 2]] = np.clip(
+            candidate_boxes[:, [0, 2]], 0.0, float(width)
+        )
+        candidate_boxes[:, [1, 3]] = np.clip(
+            candidate_boxes[:, [1, 3]], 0.0, float(height)
+        )
         box_filter = getattr(self, "box_filter", {})
         valid = _box_filter_mask(candidate_boxes, width, height, box_filter)
         candidate_boxes = candidate_boxes[valid]
@@ -298,12 +410,15 @@ class RKNNYoloDetector:
                     continue
                 class_map = class_tensor[0, class_id]
                 ys, xs = np.where(
-                    class_map >= self._threshold_for_class(class_id, threshold_overrides)
+                    class_map
+                    >= self._threshold_for_class(class_id, threshold_overrides)
                 )
                 if ys.size == 0:
                     continue
                 scores = class_map[ys, xs].astype(np.float32, copy=False)
-                branch_boxes.append(_yolov8_box_process_selected(box_tensor[0], ys, xs, self.input_size))
+                branch_boxes.append(
+                    _yolov8_box_process_selected(box_tensor[0], ys, xs, self.input_size)
+                )
                 branch_scores.append(scores)
                 branch_class_ids.append(np.full(scores.shape, class_id, dtype=np.int32))
 
@@ -341,12 +456,15 @@ class RKNNYoloDetector:
             )
             keep.extend(int(indexes[index]) for index in class_keep)
         keep.sort(key=lambda index: float(scores[index]), reverse=True)
-        detections = [Detection(
-            tuple(float(value) for value in boxes_xyxy[index]),
-            float(scores[index]),
-            int(class_ids[index]),
-            self.class_names[int(class_ids[index])],
-        ) for index in keep]
+        detections = [
+            Detection(
+                tuple(float(value) for value in boxes_xyxy[index]),
+                float(scores[index]),
+                int(class_ids[index]),
+                self.class_names[int(class_ids[index])],
+            )
+            for index in keep
+        ]
         return detections
 
     def _decode_row(
@@ -355,14 +473,14 @@ class RKNNYoloDetector:
         threshold_overrides: Optional[Dict[int, float]] = None,
     ) -> Optional[Tuple[float, float, float, float, float, int]]:
         values = np.asarray(row, dtype=np.float32).reshape(-1)
-        if values.size < 6:
+        if values.size < 5:
             return None
 
         class_id = 0
         score = 0.0
         xyxy_format = False
 
-        if values.size <= 7:
+        if values.size in {6, 7}:
             score = float(values[4])
             class_id = int(round(float(values[5]))) if values.size >= 6 else 0
             xyxy_format = True
@@ -388,7 +506,9 @@ class RKNNYoloDetector:
 
         coords = values[:4].astype(np.float32)
         if float(np.max(coords)) <= 1.5:
-            coords = coords * float(self.input_size)
+            input_height, input_width = _detector_input_shape(self)
+            coords[[0, 2]] *= float(input_width)
+            coords[[1, 3]] *= float(input_height)
 
         if xyxy_format:
             x1, y1, x2, y2 = [float(item) for item in coords]
@@ -411,27 +531,55 @@ class RKNNYoloDetector:
         return float(thresholds.get(int(class_id), self.confidence_threshold))
 
 
-def _preprocess(frame: np.ndarray, input_size: int) -> Tuple[np.ndarray, float, Tuple[float, float]]:
+def _normalise_input_shape(value: Any) -> Tuple[int, int]:
+    if isinstance(value, (list, tuple)):
+        if len(value) != 2:
+            raise ValueError("RKNN input shape must contain height and width")
+        height, width = int(value[0]), int(value[1])
+    else:
+        height = width = int(value)
+    if height < 32 or width < 32:
+        raise ValueError("RKNN input height and width must be at least 32")
+    if height % 32 or width % 32:
+        raise ValueError("RKNN input height and width must be divisible by 32")
+    return height, width
+
+
+def _detector_input_shape(detector: Any) -> Tuple[int, int]:
+    height = getattr(detector, "input_height", None)
+    width = getattr(detector, "input_width", None)
+    if height is not None and width is not None:
+        return int(height), int(width)
+    return _normalise_input_shape(getattr(detector, "input_size", 640))
+
+
+def _preprocess(
+    frame: np.ndarray, input_size: Any
+) -> Tuple[np.ndarray, float, Tuple[float, float]]:
+    input_height, input_width = _normalise_input_shape(input_size)
     height, width = frame.shape[:2]
-    ratio = min(input_size / float(width), input_size / float(height))
+    ratio = min(input_width / float(width), input_height / float(height))
     new_width = int(round(width * ratio))
     new_height = int(round(height * ratio))
     resized = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
-    canvas = np.full((input_size, input_size, 3), 114, dtype=np.uint8)
-    pad_x = (input_size - new_width) // 2
-    pad_y = (input_size - new_height) // 2
+    canvas = np.full((input_height, input_width, 3), 114, dtype=np.uint8)
+    pad_x = (input_width - new_width) // 2
+    pad_y = (input_height - new_height) // 2
     canvas[pad_y : pad_y + new_height, pad_x : pad_x + new_width] = resized
     rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
     return np.expand_dims(rgb, axis=0), ratio, (float(pad_x), float(pad_y))
 
 
-def _preprocess_damoyolo(frame: np.ndarray, input_size: int) -> np.ndarray:
-    resized = cv2.resize(frame, (input_size, input_size), interpolation=cv2.INTER_LINEAR)
+def _preprocess_damoyolo(frame: np.ndarray, input_size: Any) -> np.ndarray:
+    input_height, input_width = _normalise_input_shape(input_size)
+    resized = cv2.resize(
+        frame, (input_width, input_height), interpolation=cv2.INTER_LINEAR
+    )
     rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
     return np.expand_dims(rgb, axis=0)
 
 
-def _rows_from_outputs(outputs: Any) -> List[np.ndarray]:
+def _rows_from_outputs(outputs: Any, expected_classes: int = 80) -> List[np.ndarray]:
     if outputs is None:
         return []
     tensors = outputs if isinstance(outputs, (list, tuple)) else [outputs]
@@ -444,16 +592,29 @@ def _rows_from_outputs(outputs: Any) -> List[np.ndarray]:
         if arr.ndim == 1:
             arr = arr.reshape(1, -1)
         elif arr.ndim == 2:
-            if arr.shape[0] in {6, 84, 85} and arr.shape[1] > arr.shape[0]:
+            channel_counts = {
+                4 + int(expected_classes),
+                5 + int(expected_classes),
+                6,
+                84,
+                85,
+            }
+            expected_channel_counts = {
+                4 + int(expected_classes),
+                5 + int(expected_classes),
+            }
+            if arr.shape[0] in expected_channel_counts and arr.shape[1] != arr.shape[0]:
+                arr = arr.T
+            elif arr.shape[0] in channel_counts and arr.shape[1] > arr.shape[0]:
                 arr = arr.T
         elif arr.ndim >= 3:
-            if arr.shape[-1] >= 6:
+            if arr.shape[-1] >= 5:
                 arr = arr.reshape(-1, arr.shape[-1])
-            elif arr.shape[0] >= 6:
+            elif arr.shape[0] >= 5:
                 arr = arr.reshape(arr.shape[0], -1).T
             else:
                 continue
-        if arr.ndim == 2 and arr.shape[1] >= 6:
+        if arr.ndim == 2 and arr.shape[1] >= 5:
             rows.extend(arr)
     return rows
 
@@ -465,7 +626,8 @@ def _as_float32(value: Any) -> np.ndarray:
     return arr.astype(np.float32, copy=False)
 
 
-def _yolov8_box_process(position: np.ndarray, input_size: int) -> np.ndarray:
+def _yolov8_box_process(position: np.ndarray, input_size: Any) -> np.ndarray:
+    input_height, input_width = _normalise_input_shape(input_size)
     _, channels, grid_h, grid_w = position.shape
     reg_max = channels // 4
     position = position.reshape(1, 4, reg_max, grid_h, grid_w)
@@ -473,17 +635,24 @@ def _yolov8_box_process(position: np.ndarray, input_size: int) -> np.ndarray:
     bins = np.arange(reg_max, dtype=np.float32).reshape(1, 1, reg_max, 1, 1)
     distance = (position * bins).sum(axis=2)
 
-    col, row = np.meshgrid(np.arange(grid_w, dtype=np.float32), np.arange(grid_h, dtype=np.float32))
+    col, row = np.meshgrid(
+        np.arange(grid_w, dtype=np.float32), np.arange(grid_h, dtype=np.float32)
+    )
     col = col.reshape(1, 1, grid_h, grid_w)
     row = row.reshape(1, 1, grid_h, grid_w)
     grid = np.concatenate((col, row), axis=1)
-    stride = np.array([input_size // grid_w, input_size // grid_h], dtype=np.float32).reshape(1, 2, 1, 1)
+    stride = np.array(
+        [input_width / grid_w, input_height / grid_h], dtype=np.float32
+    ).reshape(1, 2, 1, 1)
     box_xy1 = grid + 0.5 - distance[:, 0:2, :, :]
     box_xy2 = grid + 0.5 + distance[:, 2:4, :, :]
     return np.concatenate((box_xy1 * stride, box_xy2 * stride), axis=1)
 
 
-def _yolov8_box_process_selected(position: np.ndarray, ys: np.ndarray, xs: np.ndarray, input_size: int) -> np.ndarray:
+def _yolov8_box_process_selected(
+    position: np.ndarray, ys: np.ndarray, xs: np.ndarray, input_size: Any
+) -> np.ndarray:
+    input_height, input_width = _normalise_input_shape(input_size)
     channels, grid_h, grid_w = position.shape
     reg_max = channels // 4
     logits = position.reshape(4, reg_max, grid_h, grid_w)[:, :, ys, xs]
@@ -492,8 +661,8 @@ def _yolov8_box_process_selected(position: np.ndarray, ys: np.ndarray, xs: np.nd
     distance = (probs * bins).sum(axis=1)
     grid_x = xs.astype(np.float32, copy=False) + 0.5
     grid_y = ys.astype(np.float32, copy=False) + 0.5
-    stride_x = float(input_size) / float(grid_w)
-    stride_y = float(input_size) / float(grid_h)
+    stride_x = float(input_width) / float(grid_w)
+    stride_y = float(input_height) / float(grid_h)
     return np.stack(
         (
             (grid_x - distance[0]) * stride_x,
@@ -582,13 +751,20 @@ def _nms_xyxy(
         duplicate = iou > nms_threshold
         if containment_threshold is not None:
             smaller = np.minimum(areas[current], areas[rest])
-            containment = np.divide(inter, smaller, out=np.zeros_like(inter), where=smaller > 0)
+            containment = np.divide(
+                inter, smaller, out=np.zeros_like(inter), where=smaller > 0
+            )
             duplicate |= containment >= float(containment_threshold)
         order = rest[~duplicate]
     return keep
 
 
-def _nms(boxes: List[List[int]], confidences: List[float], score_threshold: float, nms_threshold: float) -> List[int]:
+def _nms(
+    boxes: List[List[int]],
+    confidences: List[float],
+    score_threshold: float,
+    nms_threshold: float,
+) -> List[int]:
     if not boxes:
         return []
     indexes = cv2.dnn.NMSBoxes(boxes, confidences, score_threshold, nms_threshold)
@@ -623,7 +799,9 @@ def _normalise_class_names(value: Optional[Any]) -> Dict[int, str]:
     if value is None:
         return {index: label for index, label in enumerate(COCO_CLASS_NAMES)}
     if isinstance(value, dict):
-        result = {int(class_id): str(label).strip() for class_id, label in value.items()}
+        result = {
+            int(class_id): str(label).strip() for class_id, label in value.items()
+        }
     elif isinstance(value, (list, tuple)):
         result = {index: str(label).strip() for index, label in enumerate(value)}
     else:
@@ -639,8 +817,12 @@ def _normalise_class_thresholds(
     if value is None:
         return {}
     if not isinstance(value, dict):
-        raise TypeError("class_confidence_thresholds must be a class-id or label mapping")
-    labels = {label.strip().lower(): class_id for class_id, label in class_names.items()}
+        raise TypeError(
+            "class_confidence_thresholds must be a class-id or label mapping"
+        )
+    labels = {
+        label.strip().lower(): class_id for class_id, label in class_names.items()
+    }
     result: Dict[int, float] = {}
     for key, raw_threshold in value.items():
         text = str(key).strip()
@@ -652,7 +834,9 @@ def _normalise_class_thresholds(
             raise ValueError(f"Unknown class_confidence_thresholds key: {key}")
         threshold = float(raw_threshold)
         if not 0.0 <= threshold <= 1.0:
-            raise ValueError(f"Class confidence threshold must be between 0 and 1: {key}")
+            raise ValueError(
+                f"Class confidence threshold must be between 0 and 1: {key}"
+            )
         result[class_id] = threshold
     return result
 
@@ -694,8 +878,12 @@ def _box_filter_mask(
     max_aspect = config.get("max_aspect_ratio")
     if max_aspect is not None:
         aspect = np.maximum(
-            np.divide(widths, heights, out=np.full_like(widths, np.inf), where=heights > 0),
-            np.divide(heights, widths, out=np.full_like(heights, np.inf), where=widths > 0),
+            np.divide(
+                widths, heights, out=np.full_like(widths, np.inf), where=heights > 0
+            ),
+            np.divide(
+                heights, widths, out=np.full_like(heights, np.inf), where=widths > 0
+            ),
         )
         valid &= aspect <= float(max_aspect)
     max_area_ratio = config.get("max_frame_area_ratio")
@@ -733,7 +921,11 @@ def _detector_name(model_path: Path, model_family: str) -> str:
     if "yolov6n" in stem:
         return "rknn-yolov6n"
     if model_family in DAMO_FAMILIES:
-        return "rknn-damoyolo-cigarette-int8" if "int8" in stem else "rknn-damoyolo-cigarette"
+        return (
+            "rknn-damoyolo-cigarette-int8"
+            if "int8" in stem
+            else "rknn-damoyolo-cigarette"
+        )
     if model_family:
         return f"rknn-{model_family}"
     return "rknn-yolo"

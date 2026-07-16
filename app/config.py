@@ -14,6 +14,7 @@ from typing import Any, Dict, Iterable
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = PROJECT_ROOT / "config.yaml"
+ACCURACY_PROFILE_PATH = PROJECT_ROOT / "configs" / "rk3588_no_mosaic_accuracy.yaml"
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "server": {"host": "0.0.0.0", "port": 8000},
@@ -45,22 +46,85 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "model_family": "yolov8",
         "input_size": 640,
         "confidence_threshold": 0.35,
-        "class_confidence_thresholds": {"person": 0.35, "cell phone": 0.20},
+        "class_confidence_thresholds": {
+            "person": 0.35,
+            "cell phone": 0.35,
+            "bottle": 0.22,
+            "fork": 0.22,
+            "knife": 0.22,
+            "spoon": 0.22,
+            "remote": 0.22,
+            "scissors": 0.22,
+            "toothbrush": 0.22,
+        },
         "nms_threshold": 0.45,
-        "class_filter": ["person", "cell phone"],
+        "class_filter": [
+            "person",
+            "cell phone",
+            "bottle",
+            "fork",
+            "knife",
+            "spoon",
+            "remote",
+            "scissors",
+            "toothbrush",
+        ],
         "phone_roi_refinement": {
             "enabled": True,
-            "confidence_threshold": 0.16,
-            "detect_every_n_primary_frames": 2,
+            "confidence_threshold": 0.12,
+            "refine_below_confidence": 0.30,
+            "detect_every_n_primary_frames": 1,
             "max_people": 1,
             "min_person_height_px": 160,
             "horizontal_expansion_ratio": 0.20,
             "top_expansion_ratio": 0.04,
             "upper_body_ratio": 0.90,
-            "cache_primary_frames": 1,
+            "crop_modes": [
+                {
+                    "name": "head_shoulders",
+                    "detector": "primary",
+                    "confidence_threshold": 0.12,
+                    "top_ratio": 0.00,
+                    "bottom_ratio": 0.52,
+                    "horizontal_expansion_ratio": 0.28,
+                    "top_expansion_ratio": 0.06,
+                },
+                {
+                    "name": "hands_torso",
+                    "detector": "primary",
+                    "confidence_threshold": 0.20,
+                    "top_ratio": 0.18,
+                    "bottom_ratio": 0.88,
+                    "horizontal_expansion_ratio": 0.22,
+                    "top_expansion_ratio": 0.00,
+                },
+                {
+                    "name": "upper_body_context",
+                    "detector": "context",
+                    "confidence_threshold": 0.35,
+                    "top_ratio": 0.00,
+                    "bottom_ratio": 0.90,
+                    "horizontal_expansion_ratio": 0.20,
+                    "top_expansion_ratio": 0.04,
+                },
+            ],
+            "cache_primary_frames": 8,
+            "cache_confidence_decay": 0.97,
+            "cache_min_confidence": 0.08,
             "max_phone_area_ratio": 0.25,
             "nms_threshold": 0.35,
             "containment_threshold": 0.70,
+            "context_model": {
+                "enabled": True,
+                "model_path": "models/yolo11n.rknn",
+                "model_family": "yolo11",
+                "input_size": 640,
+                "confidence_threshold": 0.35,
+                "nms_threshold": 0.45,
+                "class_filter": ["cell phone"],
+                "core_mask": "0_1_2",
+                "expected_sha256": "8853507c88c777f39e574b730abdd2a151be102830c570cee0fd31a6bb8010fc",
+            },
         },
         "core_mask": "0_1_2",
         "expected_sha256": "ff3a64e6fe180203128c8d42456b458d208d3a1e2217d63683af00d6194e82ea",
@@ -84,23 +148,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "cooldown_frames": 20,
     },
     "privacy": {
-        "face_mosaic_enabled": True,
-        "face_detector": "retinaface-onnx",
-        "face_model_path": "models/RetinaFace_mobile320.onnx",
-        "face_input_size": 320,
-        "face_confidence_threshold": 0.6,
-        "face_nms_threshold": 0.4,
-        "face_detector_threads": 1,
-        "face_detect_every_n_frames": 5,
-        "face_result_max_age_ms": 1000,
-        "face_mosaic_padding": 0.25,
-        "face_tracking_enabled": True,
-        "face_tracking_min_points": 4,
-        "face_tracking_win_size": 31,
-        "face_tracking_max_level": 3,
-        "face_tracking_max_motion_px": 96,
-        "head_fallback_enabled": True,
-        "mosaic_strength": 14,
+        "face_detection_enabled": False,
+        "mosaic_enabled": False,
+        "unredacted_video_enabled": True,
+        "unredacted_evidence_enabled": True,
     },
 }
 
@@ -111,6 +162,27 @@ def load_config(path: Path = CONFIG_PATH) -> Dict[str, Any]:
         parsed = load_yaml_file(path)
         _deep_update(config, parsed)
     return config
+
+
+def load_accuracy_profile(path: Path = ACCURACY_PROFILE_PATH) -> Dict[str, Any]:
+    """Load and validate the no-mosaic accuracy deployment profile."""
+
+    profile = load_yaml_file(path)
+    privacy = profile.get("privacy", {})
+    behavior = profile.get("behavior", {})
+    required_privacy = {
+        "face_detection_enabled": False,
+        "mosaic_enabled": False,
+        "unredacted_video_enabled": True,
+        "unredacted_evidence_enabled": True,
+    }
+    for key, expected in required_privacy.items():
+        if privacy.get(key) is not expected:
+            raise ValueError(f"privacy.{key} must be {str(expected).lower()} in {path}")
+    for key in ("phone_detection_enabled", "smoking_detection_enabled"):
+        if behavior.get(key) is not True:
+            raise ValueError(f"behavior.{key} must be true in {path}")
+    return profile
 
 
 def load_yaml_file(path: Path) -> Dict[str, Any]:
@@ -154,7 +226,9 @@ def _deep_update(target: Dict[str, Any], source: Dict[str, Any]) -> None:
             target[key] = value
 
 
-def _render_counting_block(line: Dict[str, Any], direction: str, cooldown_frames: int) -> str:
+def _render_counting_block(
+    line: Dict[str, Any], direction: str, cooldown_frames: int
+) -> str:
     return "\n".join(
         [
             "counting:",
@@ -253,7 +327,9 @@ def _parse_scalar(value: str) -> Any:
         return True
     if lowered == "false":
         return False
-    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+    if (value.startswith('"') and value.endswith('"')) or (
+        value.startswith("'") and value.endswith("'")
+    ):
         return value[1:-1]
     if (value.startswith("[") and value.endswith("]")) or (
         value.startswith("{") and value.endswith("}")

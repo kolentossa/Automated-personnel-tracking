@@ -19,31 +19,54 @@ if str(PROJECT_ROOT) not in sys.path:
 from app.camera import CameraSource  # noqa: E402
 from app.config import load_config  # noqa: E402
 from app.detector import PersonDetector  # noqa: E402
-from app.privacy import FaceMosaicProcessor  # noqa: E402
 from app.stats import TIMING_KEYS  # noqa: E402
 from app.tracker import PersonTracker  # noqa: E402
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Benchmark RK3588 person-tracking pipeline latency.")
-    parser.add_argument("--frames", type=int, default=300, help="Number of processed frames to benchmark.")
-    parser.add_argument("--warmup-frames", type=int, default=30, help="Warmup frames excluded from metrics.")
-    parser.add_argument("--video", type=Path, help="Optional prerecorded input using the same pipeline.")
+    parser = argparse.ArgumentParser(
+        description="Benchmark RK3588 person-tracking pipeline latency."
+    )
+    parser.add_argument(
+        "--frames",
+        type=int,
+        default=300,
+        help="Number of processed frames to benchmark.",
+    )
+    parser.add_argument(
+        "--warmup-frames",
+        type=int,
+        default=30,
+        help="Warmup frames excluded from metrics.",
+    )
+    parser.add_argument(
+        "--video", type=Path, help="Optional prerecorded input using the same pipeline."
+    )
     args = parser.parse_args()
 
     config = load_config()
     camera_config = dict(config["camera"])
     if args.video:
-        camera_config.update({"source_type": "video", "video_file": str(args.video), "auto_detect": False})
+        camera_config.update(
+            {
+                "source_type": "video",
+                "video_file": str(args.video),
+                "auto_detect": False,
+            }
+        )
     camera = CameraSource(camera_config)
-    detector = PersonDetector(config.get("detector") or config.get("detection", {}), fallback_config=config.get("detection", {}))
+    detector = PersonDetector(
+        config.get("detector") or config.get("detection", {}),
+        fallback_config=config.get("detection", {}),
+    )
     tracker = PersonTracker(config["tracking"])
-    privacy = FaceMosaicProcessor(config["privacy"])
     stream_config = config.get("stream", {})
     jpeg_quality = max(35, min(95, int(stream_config.get("jpeg_quality") or 80)))
     stream_width = max(0, int(stream_config.get("width") or 0))
     stream_height = max(0, int(stream_config.get("height") or 0))
-    detect_every_n_frames = max(1, int(config.get("performance", {}).get("detect_every_n_frames") or 1))
+    detect_every_n_frames = max(
+        1, int(config.get("performance", {}).get("detect_every_n_frames") or 1)
+    )
     if detector.name in {"no-op-person-detector", "motion-person-detector"}:
         print(f"detector: {detector.name}")
         print(f"npu_enabled: {str(detector.npu_enabled).lower()}")
@@ -51,12 +74,6 @@ def main() -> int:
             print(f"warning: {detector.warning}")
         print("error: refusing to benchmark placeholder detector", file=sys.stderr)
         return 2
-    privacy_status = privacy.snapshot()
-    if config["privacy"].get("face_mosaic_enabled", True) and not privacy_status["face_detector_available"]:
-        print(f"face_detector: {privacy_status['face_detector']}")
-        print(f"error: {privacy_status['face_detector_error']}", file=sys.stderr)
-        return 4
-
     timings: Dict[str, List[float]] = {key: [] for key in TIMING_KEYS}
     processed = 0
     frame_index = 0
@@ -64,7 +81,6 @@ def main() -> int:
     last_detections = []
     started = 0.0
 
-    privacy.start()
     try:
         while processed < args.frames:
             capture_started = time.monotonic()
@@ -78,7 +94,9 @@ def main() -> int:
             if frame_index == max(0, args.warmup_frames):
                 started = time.monotonic()
 
-            detect_this_frame = frame_index % detect_every_n_frames == 0 or not detector_has_run
+            detect_this_frame = (
+                frame_index % detect_every_n_frames == 0 or not detector_has_run
+            )
             if detect_this_frame:
                 detections = detector.detect(packet.frame)
                 detector_profile = dict(detector.last_profile)
@@ -86,18 +104,18 @@ def main() -> int:
                 detector_has_run = True
             else:
                 detections = list(last_detections)
-                detector_profile = {"preprocess_ms": 0.0, "inference_ms": 0.0, "postprocess_ms": 0.0}
+                detector_profile = {
+                    "preprocess_ms": 0.0,
+                    "inference_ms": 0.0,
+                    "postprocess_ms": 0.0,
+                }
 
             tracking_started = time.monotonic()
             tracks = tracker.update(detections)
             tracking_ms = _ms(time.monotonic() - tracking_started)
 
-            privacy_started = time.monotonic()
-            display = privacy.process(
-                packet.frame,
-                [track.bbox for track in tracks] or [detection.bbox for detection in detections],
-            )
-            privacy_ms = _ms(time.monotonic() - privacy_started)
+            display = packet.frame.copy()
+            privacy_ms = 0.0
 
             draw_started = time.monotonic()
             _draw_tracks(display, tracks)
@@ -105,7 +123,9 @@ def main() -> int:
 
             encode_started = time.monotonic()
             stream_frame = _resize_for_stream(display, stream_width, stream_height)
-            ok, _ = cv2.imencode(".jpg", stream_frame, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
+            ok, _ = cv2.imencode(
+                ".jpg", stream_frame, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality]
+            )
             encode_ms = _ms(time.monotonic() - encode_started)
             if not ok:
                 raise RuntimeError("Could not encode JPEG frame")
@@ -129,7 +149,6 @@ def main() -> int:
                 processed += 1
             frame_index += 1
     finally:
-        privacy.stop()
         camera.release()
 
     elapsed = time.monotonic() - started if started else 0.0
@@ -142,13 +161,9 @@ def main() -> int:
     print(f"warmup_frames: {max(0, args.warmup_frames)}")
     print(f"detector: {detector.name}")
     print(f"npu_enabled: {str(detector.npu_enabled).lower()}")
-    privacy_status = privacy.snapshot()
-    print(f"face_detector: {privacy_status['face_detector']}")
-    print(f"face_detector_available: {str(privacy_status['face_detector_available']).lower()}")
-    print(f"face_detection_ms: {privacy_status['face_detection_ms']:.1f}")
-    print(f"face_tracking_ms: {privacy_status['face_tracking_ms']:.1f}")
-    print(f"face_tracked_boxes: {privacy_status['face_tracked_boxes']}")
-    print(f"face_fallback_regions: {privacy_status['face_fallback_regions']}")
+    print("privacy_mode: no_mosaic")
+    print("face_detection_enabled: false")
+    print("mosaic_enabled: false")
     print(f"average_fps: {fps:.2f}")
     print(f"p50_latency_ms: {_percentile(latencies, 50):.1f}")
     print(f"p95_latency_ms: {_percentile(latencies, 95):.1f}")
@@ -191,7 +206,15 @@ def _draw_tracks(frame, tracks) -> None:
         x1, y1, x2, y2 = [int(value) for value in track.bbox]
         cv2.rectangle(frame, (x1, y1), (x2, y2), (42, 166, 85), 2)
         label = f"ID {track.track_id} {track.confidence:.2f}"
-        cv2.putText(frame, label, (x1, max(24, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (42, 166, 85), 2)
+        cv2.putText(
+            frame,
+            label,
+            (x1, max(24, y1 - 8)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.58,
+            (42, 166, 85),
+            2,
+        )
 
 
 def _resize_for_stream(frame, width: int, height: int):

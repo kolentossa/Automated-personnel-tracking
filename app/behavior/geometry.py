@@ -30,50 +30,82 @@ def associate_targets(
             expanded = expand_box(track.bbox, expansion_ratio)
             if not point_in_box(center, expanded):
                 continue
-            candidates.append((_normalised_center_distance(center, track.bbox), track.track_id))
+            candidates.append(
+                (_normalised_center_distance(center, track.bbox), track.track_id)
+            )
         if candidates:
             _, track_id = min(candidates)
             result[track_id].append(detection)
     return result
 
 
-def associate_faces(tracks: Iterable[TrackedPerson], face_boxes: Iterable[BBox]) -> Dict[int, BBox]:
-    faces = [tuple(float(value) for value in box) for box in face_boxes]
-    result: Dict[int, BBox] = {}
-    for track in tracks:
-        inside = [face for face in faces if point_in_box(bbox_centroid(face), expand_box(track.bbox, 0.05))]
-        if inside:
-            result[track.track_id] = max(inside, key=lambda box: box_area(box))
-    return result
+def estimated_head_region(person_bbox: BBox, config: Optional[dict] = None) -> BBox:
+    """Estimate a head region from a person box without a face model."""
 
-
-def estimated_face_box(person_bbox: BBox) -> BBox:
+    values = dict(config or {})
     x1, y1, x2, y2 = person_bbox
     width = x2 - x1
     height = y2 - y1
-    return (x1 + 0.22 * width, y1, x2 - 0.22 * width, y1 + 0.32 * height)
+    left = float(values.get("left_ratio", 0.22))
+    right = float(values.get("right_ratio", 0.78))
+    top = float(values.get("top_ratio", 0.0))
+    bottom = float(values.get("bottom_ratio", 0.32))
+    return (
+        x1 + left * width,
+        y1 + top * height,
+        x1 + right * width,
+        y1 + bottom * height,
+    )
 
 
-def near_face(target_bbox: BBox, face_bbox: BBox, max_distance_ratio: float) -> Tuple[bool, float]:
-    face_center = bbox_centroid(face_bbox)
+def estimated_mouth_region(person_bbox: BBox, config: Optional[dict] = None) -> BBox:
+    """Estimate the lower head/mouth search area from a person box."""
+
+    values = dict(config or {})
+    x1, y1, x2, y2 = person_bbox
+    width = x2 - x1
+    height = y2 - y1
+    left = float(values.get("left_ratio", 0.22))
+    right = float(values.get("right_ratio", 0.78))
+    top = float(values.get("mouth_top_ratio", 0.16))
+    bottom = float(values.get("mouth_bottom_ratio", 0.36))
+    return (
+        x1 + left * width,
+        y1 + top * height,
+        x1 + right * width,
+        y1 + bottom * height,
+    )
+
+
+def near_region(
+    target_bbox: BBox, region_bbox: BBox, max_distance_ratio: float
+) -> Tuple[bool, float]:
+    region_center = bbox_centroid(region_bbox)
     target_center = bbox_centroid(target_bbox)
-    face_scale = max(1.0, math.hypot(face_bbox[2] - face_bbox[0], face_bbox[3] - face_bbox[1]))
-    distance_ratio = math.dist(face_center, target_center) / face_scale
-    overlap = intersection_over_target(target_bbox, expand_box(face_bbox, 0.35))
+    region_scale = max(
+        1.0,
+        math.hypot(region_bbox[2] - region_bbox[0], region_bbox[3] - region_bbox[1]),
+    )
+    distance_ratio = math.dist(region_center, target_center) / region_scale
+    overlap = intersection_over_target(target_bbox, expand_box(region_bbox, 0.35))
     matched = overlap > 0.05 or distance_ratio <= max_distance_ratio
     score = max(overlap, max(0.0, 1.0 - distance_ratio / max(0.01, max_distance_ratio)))
     return matched, min(1.0, score)
 
 
-def phone_below_face(phone_bbox: BBox, face_bbox: BBox, person_bbox: BBox) -> Tuple[bool, float]:
+def phone_below_head(
+    phone_bbox: BBox, head_bbox: BBox, person_bbox: BBox
+) -> Tuple[bool, float]:
     px, py = bbox_centroid(phone_bbox)
-    fx, fy = bbox_centroid(face_bbox)
+    hx, hy = bbox_centroid(head_bbox)
     x1, y1, x2, y2 = person_bbox
     width = max(1.0, x2 - x1)
     height = max(1.0, y2 - y1)
-    inside_upper_body = x1 <= px <= x2 and y1 + 0.18 * height <= py <= y1 + 0.78 * height
-    below = py > fy + 0.08 * height
-    horizontal = abs(px - fx) / width
+    inside_upper_body = (
+        x1 <= px <= x2 and y1 + 0.18 * height <= py <= y1 + 0.78 * height
+    )
+    below = py > hy + 0.08 * height
+    horizontal = abs(px - hx) / width
     score = max(0.0, 1.0 - horizontal)
     return bool(inside_upper_body and below), score
 
@@ -97,7 +129,9 @@ def phone_aims_at_roi(
     roi_norm = math.hypot(*roi_vector)
     if not raised or phone_norm < 1.0 or roi_norm < 1.0:
         return False, 0.0
-    cosine = max(-1.0, min(1.0, _dot(phone_vector, roi_vector) / (phone_norm * roi_norm)))
+    cosine = max(
+        -1.0, min(1.0, _dot(phone_vector, roi_vector) / (phone_norm * roi_norm))
+    )
     angle = math.degrees(math.acos(cosine))
     aligned = angle <= max_angle_deg
     score = max(0.0, 1.0 - angle / max(1.0, max_angle_deg))

@@ -50,9 +50,7 @@ class TemporalEventStateMachineTests(TestCase):
         self.assertIsNotNone(self.machine.update(self.signal, self.rule, 1200))
 
     def test_short_detection_gaps_do_not_rearm_continuous_event(self) -> None:
-        rule = BehaviorRule(
-            100, 3, 0.3, 1000, max_gap_frames=1, rearm_absence_ms=500
-        )
+        rule = BehaviorRule(100, 3, 0.3, 1000, max_gap_frames=1, rearm_absence_ms=500)
         self.machine.update(self.signal, rule, 0)
         self.machine.update(self.signal, rule, 50)
         self.assertIsNotNone(self.machine.update(self.signal, rule, 100))
@@ -73,48 +71,53 @@ class BehaviorEngineScenarioTests(TestCase):
     def setUp(self) -> None:
         self.config = _test_config()
         self.track = TrackedPerson(1, (100, 100, 300, 500), 0.95)
-        self.face = (150, 110, 240, 210)
 
     def test_phone_near_ear_below_duration_does_not_alert(self) -> None:
         engine = BehaviorEngine(self.config)
         phone = Detection((205, 145, 230, 185), 0.9, 67, "cell phone")
-        self.assertEqual(engine.update([self.track], [phone], [self.face], (720, 1280), 0).triggers, [])
-        self.assertEqual(engine.update([self.track], [phone], [self.face], (720, 1280), 50).triggers, [])
+        self.assertEqual(
+            engine.update([self.track], [phone], (720, 1280), 0).triggers, []
+        )
+        self.assertEqual(
+            engine.update([self.track], [phone], (720, 1280), 50).triggers, []
+        )
 
     def test_phone_call_triggers_once(self) -> None:
         engine = BehaviorEngine(self.config)
         phone = Detection((205, 145, 230, 185), 0.9, 67, "cell phone")
-        events = _run(engine, self.track, [phone], [self.face], (0, 50, 100, 150, 200))
+        events = _run(engine, self.track, [phone], (0, 50, 100, 150, 200))
         calls = [event for event in events if event.event_type == "phone_call"]
         self.assertEqual(len(calls), 1)
-        self.assertIn("phone_near_detected_face", calls[0].evidence)
+        self.assertIn("phone_near_estimated_head_region", calls[0].evidence)
 
     def test_low_confidence_phone_call_survives_geometric_validation(self) -> None:
         engine = BehaviorEngine(self.config)
         phone = Detection((205, 145, 230, 185), 0.22, 67, "cell phone")
-        events = _run(engine, self.track, [phone], [self.face], (0, 50, 100, 150, 200))
+        events = _run(engine, self.track, [phone], (0, 50, 100, 150, 200))
         self.assertTrue(any(event.event_type == "phone_call" for event in events))
 
     def test_phone_far_below_estimated_face_is_not_a_call(self) -> None:
         engine = BehaviorEngine(self.config)
         large_person = TrackedPerson(3, (0, 0, 1200, 700), 0.95)
         phone = Detection((900, 640, 1080, 700), 0.30, 67, "cell phone")
-        events = _run(engine, large_person, [phone], [], (0, 50, 100, 150, 200, 250))
+        events = _run(engine, large_person, [phone], (0, 50, 100, 150, 200, 250))
         self.assertFalse(any(event.event_type == "phone_call" for event in events))
 
     def test_phone_playing_triggers(self) -> None:
         engine = BehaviorEngine(self.config)
         phone = Detection((175, 300, 210, 345), 0.9, 67, "cell phone")
-        events = _run(engine, self.track, [phone], [self.face], (0, 50, 100, 150))
+        events = _run(engine, self.track, [phone], (0, 50, 100, 150))
         playing = [event for event in events if event.event_type == "phone_playing"]
         self.assertEqual(len(playing), 1)
-        self.assertIn("phone_below_face_attention_proxy", playing[0].evidence)
+        self.assertIn("phone_below_head_attention_proxy", playing[0].evidence)
 
     def test_phone_raised_toward_prohibited_roi_triggers(self) -> None:
         engine = BehaviorEngine(self.config)
         phone = Detection((260, 235, 290, 275), 0.9, 67, "cell phone")
-        events = _run(engine, self.track, [phone], [self.face], (0, 50, 100, 150))
-        photos = [event for event in events if event.event_type == "unauthorized_photography"]
+        events = _run(engine, self.track, [phone], (0, 50, 100, 150))
+        photos = [
+            event for event in events if event.event_type == "unauthorized_photography"
+        ]
         self.assertEqual(len(photos), 1)
         self.assertIn("prohibited_roi", photos[0].object_bboxes)
 
@@ -122,14 +125,20 @@ class BehaviorEngineScenarioTests(TestCase):
         engine = BehaviorEngine(self.config)
         person = TrackedPerson(2, (420, 100, 550, 500), 0.95)
         phone = Detection((510, 210, 535, 250), 0.9, 67, "cell phone")
-        events = _run(engine, person, [phone], [], (0, 50, 100, 150))
-        self.assertFalse(any(event.event_type == "unauthorized_photography" for event in events))
+        events = _run(engine, person, [phone], (0, 50, 100, 150))
+        self.assertFalse(
+            any(event.event_type == "unauthorized_photography" for event in events)
+        )
 
-    def test_person_outside_roi_with_low_phone_does_not_trigger_photography(self) -> None:
+    def test_person_outside_roi_with_low_phone_does_not_trigger_photography(
+        self,
+    ) -> None:
         engine = BehaviorEngine(self.config)
         phone = Detection((150, 390, 185, 440), 0.9, 67, "cell phone")
-        events = _run(engine, self.track, [phone], [self.face], (0, 50, 100, 150, 200))
-        self.assertFalse(any(event.event_type == "unauthorized_photography" for event in events))
+        events = _run(engine, self.track, [phone], (0, 50, 100, 150, 200))
+        self.assertFalse(
+            any(event.event_type == "unauthorized_photography" for event in events)
+        )
 
     def test_cigarette_and_hand_to_mouth_trigger_smoking(self) -> None:
         engine = BehaviorEngine(self.config)
@@ -137,7 +146,7 @@ class BehaviorEngineScenarioTests(TestCase):
             Detection((205, 175, 217, 190), 0.85, 2, "cigarette"),
             Detection((175, 155, 225, 215), 0.8, 6, "hand"),
         ]
-        events = _run(engine, self.track, detections, [self.face], (0, 50, 100, 150))
+        events = _run(engine, self.track, detections, (0, 50, 100, 150))
         smoking = [event for event in events if event.event_type == "smoking"]
         self.assertEqual(len(smoking), 1)
         self.assertIn("hand_to_mouth_with_cigarette", smoking[0].evidence)
@@ -145,13 +154,13 @@ class BehaviorEngineScenarioTests(TestCase):
     def test_smoke_without_person_action_does_not_trigger_smoking(self) -> None:
         engine = BehaviorEngine(self.config)
         smoke = Detection((140, 130, 260, 300), 0.95, 3, "smoke")
-        events = _run(engine, self.track, [smoke], [self.face], (0, 50, 100, 150, 200))
+        events = _run(engine, self.track, [smoke], (0, 50, 100, 150, 200))
         self.assertFalse(any(event.event_type == "smoking" for event in events))
 
     def test_unassociated_cigarette_does_not_trigger_smoking(self) -> None:
         engine = BehaviorEngine(self.config)
         cigarette = Detection((500, 100, 520, 120), 0.95, 0, "cigarette")
-        events = _run(engine, self.track, [cigarette], [self.face], (0, 50, 100, 150, 200))
+        events = _run(engine, self.track, [cigarette], (0, 50, 100, 150, 200))
         self.assertFalse(any(event.event_type == "smoking" for event in events))
 
     def test_phone_drinking_eating_and_pen_labels_do_not_trigger_smoking(self) -> None:
@@ -162,13 +171,13 @@ class BehaviorEngineScenarioTests(TestCase):
             Detection((205, 175, 230, 210), 0.95, 42, "fork"),
             Detection((205, 175, 230, 210), 0.95, 99, "pen"),
         ]
-        events = _run(engine, self.track, negatives, [self.face], (0, 50, 100, 150, 200))
+        events = _run(engine, self.track, negatives, (0, 50, 100, 150, 200))
         self.assertFalse(any(event.event_type == "smoking" for event in events))
 
     def test_direct_smoking_class_triggers(self) -> None:
         engine = BehaviorEngine(self.config)
         smoking = Detection((130, 110, 280, 350), 0.9, 2, "smoking")
-        events = _run(engine, self.track, [smoking], [self.face], (0, 50, 100, 150))
+        events = _run(engine, self.track, [smoking], (0, 50, 100, 150))
         detected = [event for event in events if event.event_type == "smoking"]
         self.assertEqual(len(detected), 1)
         self.assertIn("direct_smoking_model_output", detected[0].evidence)
@@ -176,17 +185,30 @@ class BehaviorEngineScenarioTests(TestCase):
     def test_missing_track_state_is_cleaned(self) -> None:
         engine = BehaviorEngine(self.config)
         phone = Detection((205, 145, 230, 185), 0.9, 67, "cell phone")
-        engine.update([self.track], [phone], [self.face], (720, 1280), 0)
-        engine.update([], [], [], (720, 1280), 500)
+        engine.update([self.track], [phone], (720, 1280), 0)
+        engine.update([], [], (720, 1280), 500)
         snapshot = engine.snapshot()
         self.assertEqual(snapshot["phone_active_candidate_count"], 0)
         self.assertEqual(snapshot["smoking_active_candidate_count"], 0)
+        self.assertIn("raw_cigarette_candidates", snapshot)
+        self.assertIn("verified_cigarette_candidates", snapshot)
+        self.assertIn("cigarette_filter_reasons", snapshot)
+        self.assertIn("cigarette_candidate_states", snapshot)
 
 
-def _run(engine, track, detections, faces, timestamps):
+def _run(engine, track, detections, timestamps):
     events = []
-    for timestamp in timestamps:
-        events.extend(engine.update([track], detections, faces, (720, 1280), timestamp).triggers)
+    for frame_index, timestamp in enumerate(timestamps):
+        events.extend(
+            engine.update(
+                [track],
+                detections,
+                (720, 1280),
+                timestamp,
+                frame_index=frame_index,
+                behavior_model_fresh=True,
+            ).triggers
+        )
     return events
 
 
@@ -194,27 +216,37 @@ def _test_config() -> dict:
     config = deepcopy(DEFAULT_BEHAVIOR_CONFIG)
     config["association"]["stale_track_ms"] = 200
     for name in ("phone_call", "phone_playing", "unauthorized_photography"):
-        config["phone"][name].update({
+        config["phone"][name].update(
+            {
+                "duration_ms": 100,
+                "min_consecutive_frames": 3,
+                "confidence_threshold": 0.2,
+                "cooldown_ms": 1000,
+                "max_gap_frames": 1,
+            }
+        )
+    config["phone"]["prohibited_rois"] = [
+        {
+            "id": "equipment",
+            "enabled": True,
+            "normalized": False,
+            "x1": 400,
+            "y1": 100,
+            "x2": 600,
+            "y2": 400,
+        }
+    ]
+    config["smoking"].update(
+        {
             "duration_ms": 100,
             "min_consecutive_frames": 3,
             "confidence_threshold": 0.2,
             "cooldown_ms": 1000,
             "max_gap_frames": 1,
-        })
-    config["phone"]["prohibited_rois"] = [{
-        "id": "equipment",
-        "enabled": True,
-        "normalized": False,
-        "x1": 400,
-        "y1": 100,
-        "x2": 600,
-        "y2": 400,
-    }]
-    config["smoking"].update({
-        "duration_ms": 100,
-        "min_consecutive_frames": 3,
-        "confidence_threshold": 0.2,
-        "cooldown_ms": 1000,
-        "max_gap_frames": 1,
-    })
+            "cigarette_raw_confidence": 0.2,
+            "cigarette_verified_confidence": 0.2,
+            "minimum_verified_frames": 1,
+            "temporal_window_frames": 5,
+        }
+    )
     return config

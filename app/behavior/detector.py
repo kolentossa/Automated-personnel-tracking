@@ -26,13 +26,16 @@ class BehaviorObjectDetector:
         self.config = dict(config or {})
         self.enabled = bool(self.config.get("enabled", False))
         self.required = bool(self.config.get("required", False))
-        self.detect_every_n_frames = max(1, int(self.config.get("detect_every_n_frames") or 3))
+        self.detect_every_n_frames = max(
+            1, int(self.config.get("detect_every_n_frames") or 3)
+        )
         self.model_path = str(self.config.get("model_path") or "")
         self.name = "behavior-model-disabled"
         self.available = False
         self.npu_enabled = False
         self.error = ""
         self.last_profile: Dict[str, float] = _empty_profile()
+        self.last_result_is_fresh = False
         self._detector = None
         self._last_detections: List[Detection] = []
         self._has_run = False
@@ -42,19 +45,23 @@ class BehaviorObjectDetector:
 
     def detect(self, frame: Frame, frame_index: int) -> List[Detection]:
         if self._detector is None:
+            self.last_result_is_fresh = False
             self.last_profile = _empty_profile()
             return []
         if frame_index % self.detect_every_n_frames != 0 and self._has_run:
+            self.last_result_is_fresh = False
             self.last_profile = _empty_profile()
             return list(self._last_detections)
         try:
             detections = self._detector.detect(frame)
+            self.last_result_is_fresh = True
             self.last_profile = dict(self._detector.last_profile)
             self._last_detections = detections
             self._has_run = True
             self.error = ""
             return list(detections)
         except Exception as exc:
+            self.last_result_is_fresh = False
             self._has_run = True
             self.error = f"Behavior RKNN inference failed: {exc}"
             self.last_profile = _empty_profile()
@@ -78,6 +85,7 @@ class BehaviorObjectDetector:
             "smoking_detection_available": self.smoking_detection_available,
             "behavior_model_error": self.error,
             "behavior_model_detect_every_n_frames": self.detect_every_n_frames,
+            "behavior_model_result_fresh": self.last_result_is_fresh,
         }
 
     @property
@@ -106,11 +114,15 @@ class BehaviorObjectDetector:
                 path,
                 model_family=str(self.config.get("model_family") or "yolov8"),
                 input_size=int(self.config.get("input_size") or 640),
-                confidence_threshold=float(self.config.get("confidence_threshold") or 0.3),
+                confidence_threshold=float(
+                    self.config.get("confidence_threshold") or 0.3
+                ),
                 nms_threshold=float(self.config.get("nms_threshold") or 0.45),
                 class_filter=self.config.get("class_filter") or [],
                 class_names=self.config.get("class_names"),
-                class_confidence_thresholds=self.config.get("class_confidence_thresholds"),
+                class_confidence_thresholds=self.config.get(
+                    "class_confidence_thresholds"
+                ),
                 box_filter=self.config.get("box_filter"),
                 core_mask=self.config.get("core_mask") or "2",
             )
@@ -139,5 +151,7 @@ def _configured_labels(config: dict) -> set[str]:
     class_names = config.get("class_names") or []
     values = class_names.values() if isinstance(class_names, dict) else class_names
     available = {str(value).strip().lower() for value in values}
-    selected = {str(value).strip().lower() for value in (config.get("class_filter") or [])}
+    selected = {
+        str(value).strip().lower() for value in (config.get("class_filter") or [])
+    }
     return available.intersection(selected) if selected else available

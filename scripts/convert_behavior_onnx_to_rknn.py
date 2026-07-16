@@ -12,27 +12,49 @@ from pathlib import Path
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--onnx", required=True, type=Path)
-    parser.add_argument("--output", default=Path("models/behavior_yolov8n.rknn"), type=Path)
-    parser.add_argument("--dataset", type=Path, help="Calibration image list required for INT8")
-    parser.add_argument("--model-family", choices=("damoyolo", "yolov8"), default="yolov8")
+    parser.add_argument(
+        "--output", default=Path("models/behavior_yolov8n.rknn"), type=Path
+    )
+    parser.add_argument(
+        "--dataset", type=Path, help="Calibration image list required for INT8"
+    )
+    parser.add_argument(
+        "--model-family",
+        choices=("damoyolo", "yolov8", "yolov8-cls"),
+        default="yolov8",
+    )
     parser.add_argument("--input-size", type=int, default=640)
+    parser.add_argument("--input-height", type=int)
+    parser.add_argument("--input-width", type=int)
     parser.add_argument("--target", default="rk3588")
     parser.add_argument("--no-quantize", action="store_true")
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
     if not args.onnx.is_file():
         parser.error(f"ONNX model does not exist: {args.onnx}")
-    if args.input_size < 32:
-        parser.error("--input-size must be at least 32")
+    input_height = args.input_height or args.input_size
+    input_width = args.input_width or args.input_size
+    if bool(args.input_height) != bool(args.input_width):
+        parser.error("--input-height and --input-width must be provided together")
+    if input_height < 32 or input_width < 32:
+        parser.error("input height and width must be at least 32")
+    if input_height % 32 or input_width % 32:
+        parser.error("input height and width must be divisible by 32")
+    if args.model_family == "damoyolo" and input_height != input_width:
+        parser.error("DAMO-YOLO conversion currently requires a square input")
     if not args.no_quantize and (args.dataset is None or not args.dataset.is_file()):
-        parser.error("INT8 conversion requires --dataset; use --no-quantize only for validation")
+        parser.error(
+            "INT8 conversion requires --dataset; use --no-quantize only for validation"
+        )
     if args.output.exists() and not args.force:
         parser.error(f"Output exists: {args.output}; pass --force to replace it")
 
     try:
         from rknn.api import RKNN
     except Exception as exc:
-        raise SystemExit("Install a Rockchip rknn-toolkit2 wheel compatible with this Python environment") from exc
+        raise SystemExit(
+            "Install a Rockchip rknn-toolkit2 wheel compatible with this Python environment"
+        ) from exc
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     preprocess = _preprocess_for(args.model_family)
@@ -54,26 +76,36 @@ def main() -> int:
         if args.model_family == "damoyolo":
             load_options = {
                 "inputs": ["images"],
-                "input_size_list": [[1, 3, args.input_size, args.input_size]],
+                "input_size_list": [[1, 3, input_height, input_width]],
                 "outputs": ["scores", "boxes"],
             }
         _require_zero(rknn.load_onnx(model=str(args.onnx), **load_options), "load_onnx")
-        _require_zero(rknn.build(
-            do_quantization=not args.no_quantize,
-            dataset=str(args.dataset) if args.dataset else None,
-        ), "build")
+        _require_zero(
+            rknn.build(
+                do_quantization=not args.no_quantize,
+                dataset=str(args.dataset) if args.dataset else None,
+            ),
+            "build",
+        )
         _require_zero(rknn.export_rknn(str(args.output)), "export_rknn")
     finally:
         rknn.release()
     print(f"output={args.output}")
     print(f"sha256={_sha256(args.output)}")
-    print(json.dumps({
-        "model_family": args.model_family,
-        "target_platform": args.target,
-        "input_shape": [1, 3, args.input_size, args.input_size],
-        "quantization": "none" if args.no_quantize else "asymmetric_quantized-8",
-        "preprocess": preprocess,
-    }, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "model_family": args.model_family,
+                "target_platform": args.target,
+                "input_shape": [1, 3, input_height, input_width],
+                "quantization": "none"
+                if args.no_quantize
+                else "asymmetric_quantized-8",
+                "preprocess": preprocess,
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 
@@ -100,10 +132,13 @@ def _preprocess_for(model_family: str) -> dict:
             "mean": [0.0, 0.0, 0.0],
             "std": [1.0, 1.0, 1.0],
         }
+    resize = (
+        "direct resize" if model_family == "yolov8-cls" else "letterbox with value 114"
+    )
     return {
         "color": "RGB",
         "layout": "NHWC runtime input; Toolkit converts to NCHW model input",
-        "resize": "letterbox with value 114",
+        "resize": resize,
         "range": "0-1",
         "mean": [0.0, 0.0, 0.0],
         "std": [255.0, 255.0, 255.0],

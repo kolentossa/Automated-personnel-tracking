@@ -67,8 +67,8 @@ class StatsManager:
         self.detector = ""
         self.npu_enabled = False
         self.running = False
-        self.privacy_mode = True
-        self.face_mosaic_enabled = True
+        self.privacy_mode = "no_mosaic"
+        self.face_mosaic_enabled = False
         self.available_cameras = []
         self.timings: Dict[str, float] = {key: 0.0 for key in TIMING_KEYS}
         timing_window = max(1, int(config.get("_timing_window_frames") or 30))
@@ -76,7 +76,9 @@ class StatsManager:
             key: deque(maxlen=timing_window) for key in TIMING_KEYS
         }
 
-    def update_tracks(self, tracks: Iterable[TrackedPerson], frame_shape: Sequence[int]) -> None:
+    def update_tracks(
+        self, tracks: Iterable[TrackedPerson], frame_shape: Sequence[int]
+    ) -> None:
         track_list = list(tracks)
         height, width = int(frame_shape[0]), int(frame_shape[1])
         line = self.line_for_frame(width, height)
@@ -93,12 +95,16 @@ class StatsManager:
                 cooldown = self._cooldowns.get(track.track_id, 0)
                 if previous is not None and previous != side and cooldown <= 0:
                     direction = _direction(previous, side)
-                    event_type = "ENTER" if direction == self.enter_direction else "EXIT"
+                    event_type = (
+                        "ENTER" if direction == self.enter_direction else "EXIT"
+                    )
                     self._record_event(track.track_id, event_type)
                     self._cooldowns[track.track_id] = self.cooldown_frames
                 self._last_sides[track.track_id] = side
                 if track.track_id in self._cooldowns:
-                    self._cooldowns[track.track_id] = max(0, self._cooldowns[track.track_id] - 1)
+                    self._cooldowns[track.track_id] = max(
+                        0, self._cooldowns[track.track_id] - 1
+                    )
 
     def update_runtime(
         self,
@@ -111,7 +117,7 @@ class StatsManager:
         model: str,
         detector: str,
         running: bool,
-        privacy_mode: bool,
+        privacy_mode: str,
         face_mosaic_enabled: bool,
         last_error: str,
         available_cameras: list,
@@ -128,13 +134,15 @@ class StatsManager:
             self.detector = detector
             self.npu_enabled = bool(npu_enabled)
             self.running = running
-            self.privacy_mode = privacy_mode
+            self.privacy_mode = str(privacy_mode)
             self.face_mosaic_enabled = face_mosaic_enabled
             self.last_error = last_error
             self.available_cameras = available_cameras
             if timings is not None:
                 for key in TIMING_KEYS:
-                    self._timing_samples[key].append(float(timings.get(key, 0.0) or 0.0))
+                    self._timing_samples[key].append(
+                        float(timings.get(key, 0.0) or 0.0)
+                    )
                     samples = self._timing_samples[key]
                     self.timings[key] = round(sum(samples) / len(samples), 1)
                 self.latency_ms = self.timings["total_latency_ms"] or self.latency_ms
@@ -166,7 +174,9 @@ class StatsManager:
 
     def counting_config(self) -> dict:
         with self._lock:
-            line = self._line or _parse_line(self._line_arg, self.frame_width, self.frame_height)
+            line = self._line or _parse_line(
+                self._line_arg, self.frame_width, self.frame_height
+            )
             return {
                 "line": _line_as_dict(line),
                 "direction": self.direction_mode,
@@ -296,7 +306,9 @@ def _direction_mode_from_config(config: Dict[str, Any]) -> str:
         mode = direction
     if mode:
         return _normalize_direction_mode(str(mode))
-    return ENTER_TO_DIRECTION.get(str(config.get("enter_direction") or ""), "left_to_right")
+    return ENTER_TO_DIRECTION.get(
+        str(config.get("enter_direction") or ""), "left_to_right"
+    )
 
 
 def _normalize_direction_mode(value: str) -> str:

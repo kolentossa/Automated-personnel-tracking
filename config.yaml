@@ -21,22 +21,36 @@ detector:
   model_family: yolov8
   input_size: 640
   confidence_threshold: 0.35
-  class_confidence_thresholds: {"person": 0.35, "cell phone": 0.20}
+  class_confidence_thresholds: {"person": 0.35, "cell phone": 0.35, "bottle": 0.22, "fork": 0.22, "knife": 0.22, "spoon": 0.22, "remote": 0.22, "scissors": 0.22, "toothbrush": 0.22}
   nms_threshold: 0.45
-  class_filter: ["person", "cell phone"]
+  class_filter: ["person", "cell phone", "bottle", "fork", "knife", "spoon", "remote", "scissors", "toothbrush"]
   phone_roi_refinement:
     enabled: true
-    confidence_threshold: 0.16
-    detect_every_n_primary_frames: 2
+    confidence_threshold: 0.12
+    refine_below_confidence: 0.30
+    detect_every_n_primary_frames: 1
     max_people: 1
     min_person_height_px: 160
     horizontal_expansion_ratio: 0.20
     top_expansion_ratio: 0.04
     upper_body_ratio: 0.90
-    cache_primary_frames: 1
+    crop_modes: [{"name":"head_shoulders","detector":"primary","confidence_threshold":0.12,"top_ratio":0.00,"bottom_ratio":0.52,"horizontal_expansion_ratio":0.28,"top_expansion_ratio":0.06},{"name":"hands_torso","detector":"primary","confidence_threshold":0.20,"top_ratio":0.18,"bottom_ratio":0.88,"horizontal_expansion_ratio":0.22,"top_expansion_ratio":0.00},{"name":"upper_body_context","detector":"context","confidence_threshold":0.35,"top_ratio":0.00,"bottom_ratio":0.90,"horizontal_expansion_ratio":0.20,"top_expansion_ratio":0.04}]
+    cache_primary_frames: 8
+    cache_confidence_decay: 0.97
+    cache_min_confidence: 0.08
     max_phone_area_ratio: 0.25
     nms_threshold: 0.35
     containment_threshold: 0.70
+    context_model:
+      enabled: true
+      model_path: models/yolo11n.rknn
+      model_family: yolo11
+      input_size: 640
+      confidence_threshold: 0.35
+      nms_threshold: 0.45
+      class_filter: ["cell phone"]
+      core_mask: "0_1_2"
+      expected_sha256: 8853507c88c777f39e574b730abdd2a151be102830c570cee0fd31a6bb8010fc
   core_mask: "0_1_2"
   expected_sha256: ff3a64e6fe180203128c8d42456b458d208d3a1e2217d63683af00d6194e82ea
   fallback_to_cpu: false
@@ -72,28 +86,15 @@ tracking:
 
 counting:
   line:
-    x1: 640
-    y1: 0
-    x2: 640
-    y2: 720
+    x1: 814.899
+    y1: 309.778
+    x2: 789.76
+    y2: 710.595
   direction:
-    mode: left_to_right
+    mode: right_to_left
   cooldown_frames: 20
 privacy:
-  face_mosaic_enabled: true
-  face_detector: retinaface-onnx
-  face_model_path: models/RetinaFace_mobile320.onnx
-  face_input_size: 320
-  face_confidence_threshold: 0.6
-  face_nms_threshold: 0.4
-  face_detector_threads: 1
-  face_detect_every_n_frames: 5
-  face_result_max_age_ms: 1000
-  face_mosaic_padding: 0.25
-  face_tracking_enabled: true
-  face_tracking_min_points: 4
-  face_tracking_win_size: 31
-  face_tracking_max_level: 3
-  face_tracking_max_motion_px: 96
-  head_fallback_enabled: true
-  mosaic_strength: 14
+  face_detection_enabled: false
+  mosaic_enabled: false
+  unredacted_video_enabled: true
+  unredacted_evidence_enabled: true

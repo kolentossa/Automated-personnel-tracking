@@ -12,8 +12,9 @@ models:
   primary:
     use_for_runtime: false
     model_path: models/yolov8n.rknn
+    model_family: yolov8
     class_names: {"0": "person", "67": "cell phone"}
-    class_confidence_thresholds: {"person":0.35,"cell phone":0.20}
+    class_confidence_thresholds: {"person":0.35,"cell phone":0.35}
     core_mask: "0_1_2"
     expected_sha256: ff3a64e6fe180203128c8d42456b458d208d3a1e2217d63683af00d6194e82ea
   behavior:
@@ -53,7 +54,7 @@ phone:
     cooldown_ms: 10000
     max_gap_frames: 10
     rearm_absence_ms: 2500
-    max_face_distance_ratio: 1.15
+    max_head_distance_ratio: 1.15
     max_horizontal_offset_ratio: 1.0
     max_vertical_offset_ratio: 0.75
   phone_playing:
@@ -63,6 +64,7 @@ phone:
     cooldown_ms: 10000
     max_gap_frames: 10
     rearm_absence_ms: 2500
+    max_head_exclusion_distance_ratio: 0.75
   unauthorized_photography:
     duration_ms: 1200
     min_consecutive_frames: 6

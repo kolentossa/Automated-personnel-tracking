@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+import logging
 import os
 import threading
 import time
@@ -19,22 +20,38 @@ from fastapi.staticfiles import StaticFiles
 from app.camera import CameraFrame, CameraSource
 from app.behavior import BehaviorEngine, BehaviorEventManager, load_behavior_config
 from app.behavior.detector import BehaviorObjectDetector
-from app.config import load_config, save_counting_config
+from app.config import load_accuracy_profile, load_config, save_counting_config
 from app.detector import PersonDetector
-from app.privacy import FaceMosaicProcessor
 from app.stats import Line, StatsManager, TIMING_KEYS
 from app.tracker import PersonTracker
 from vision.types import Detection, TrackedPerson
 
 APP_ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = APP_ROOT / "static"
+LOGGER = logging.getLogger("person_tracking.runtime")
 
 
 def _placeholder_jpeg(message: str) -> bytes:
     frame = np.full((480, 854, 3), (236, 240, 243), dtype=np.uint8)
-    cv2.putText(frame, "RK3588 Personnel Tracking", (32, 82), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (35, 43, 49), 2)
+    cv2.putText(
+        frame,
+        "RK3588 Personnel Tracking",
+        (32, 82),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.9,
+        (35, 43, 49),
+        2,
+    )
     for index, line in enumerate(_wrap_text(message, 72)[:5]):
-        cv2.putText(frame, line, (32, 142 + index * 36), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (90, 96, 102), 2)
+        cv2.putText(
+            frame,
+            line,
+            (32, 142 + index * 36),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.58,
+            (90, 96, 102),
+            2,
+        )
     ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
     return encoded.tobytes() if ok else b""
 
@@ -58,6 +75,7 @@ def _wrap_text(value: str, size: int) -> list[str]:
 class TrackingRuntime:
     def __init__(self) -> None:
         self.config = load_config()
+        self.accuracy_profile = load_accuracy_profile()
         self.behavior_config = load_behavior_config()
         self.performance_config = self.config.get("performance", {})
         self.cpu_affinity, self.cpu_affinity_error = _apply_cpu_affinity(
@@ -66,32 +84,51 @@ class TrackingRuntime:
         camera_config = dict(self.config["camera"])
         _apply_behavior_source(camera_config, self.behavior_config.get("source", {}))
         self.camera = CameraSource(camera_config)
-        detector_config = dict(self.config.get("detector") or self.config.get("detection", {}))
+        detector_config = dict(
+            self.config.get("detector") or self.config.get("detection", {})
+        )
         primary_override = self.behavior_config.get("models", {}).get("primary", {})
         if bool(primary_override.get("use_for_runtime", False)):
-            detector_config.update({key: value for key, value in primary_override.items() if key != "use_for_runtime"})
-        self.detector = PersonDetector(detector_config, fallback_config=self.config.get("detection", {}))
+            detector_config.update(
+                {
+                    key: value
+                    for key, value in primary_override.items()
+                    if key != "use_for_runtime"
+                }
+            )
+        self.detector = PersonDetector(
+            detector_config, fallback_config=self.config.get("detection", {})
+        )
         self.tracker = PersonTracker(self.config["tracking"])
         counting_config = dict(self.config["counting"])
-        counting_config["_default_frame_width"] = int(self.config["camera"].get("width") or 960)
-        counting_config["_default_frame_height"] = int(self.config["camera"].get("height") or 540)
-        counting_config["_timing_window_frames"] = int(self.performance_config.get("timing_window_frames") or 30)
+        counting_config["_default_frame_width"] = int(
+            self.config["camera"].get("width") or 960
+        )
+        counting_config["_default_frame_height"] = int(
+            self.config["camera"].get("height") or 540
+        )
+        counting_config["_timing_window_frames"] = int(
+            self.performance_config.get("timing_window_frames") or 30
+        )
         self.stats = StatsManager(counting_config)
-        self.privacy_config = self.config["privacy"]
-        self.privacy = FaceMosaicProcessor(self.privacy_config)
+        self.privacy_config = dict(self.accuracy_profile.get("privacy") or {})
         self.behavior_detector = BehaviorObjectDetector(
             self.behavior_config.get("models", {}).get("behavior", {})
         )
         self.behavior = BehaviorEngine(self.behavior_config)
         evidence_config = dict(self.behavior_config.get("evidence", {}))
-        evidence_config["logging_level"] = self.behavior_config.get("logging", {}).get("level", "INFO")
+        evidence_config["logging_level"] = self.behavior_config.get("logging", {}).get(
+            "level", "INFO"
+        )
         self.behavior_events = BehaviorEventManager(
             evidence_config,
             str(self.behavior_config.get("camera_id") or "rk3588-camera-01"),
         )
         self.stream_config = self.config.get("stream", {})
         self.target_fps = float(self.performance_config.get("target_fps") or 30)
-        self.detect_every_n_frames = max(1, int(self.performance_config.get("detect_every_n_frames") or 1))
+        self.detect_every_n_frames = max(
+            1, int(self.performance_config.get("detect_every_n_frames") or 1)
+        )
         self.memory_trim_every_n_frames = max(
             0, int(self.performance_config.get("memory_trim_every_n_frames") or 0)
         )
@@ -100,7 +137,9 @@ class TrackingRuntime:
         self._heap_trim_released_count = 0
         self._heap_gc_run_count = 0
         self._heap_gc_collected_count = 0
-        self.jpeg_quality = max(35, min(95, int(self.stream_config.get("jpeg_quality") or 80)))
+        self.jpeg_quality = max(
+            35, min(95, int(self.stream_config.get("jpeg_quality") or 80))
+        )
         self.stream_width = max(0, int(self.stream_config.get("width") or 0))
         self.stream_height = max(0, int(self.stream_config.get("height") or 0))
         self._lock = threading.RLock()
@@ -137,10 +176,18 @@ class TrackingRuntime:
             if self._camera_thread and self._camera_thread.is_alive():
                 return
             self._stop_event.clear()
-            self.privacy.start()
+            LOGGER.warning("FACE DETECTION DISABLED")
+            LOGGER.warning("FACE MOSAIC DISABLED")
+            LOGGER.warning("VIDEO AND EVENT EVIDENCE ARE UNREDACTED")
             self.behavior_events.start()
-            self._camera_thread = threading.Thread(target=self._camera_loop, name="rk3588-camera-capture", daemon=True)
-            self._processing_thread = threading.Thread(target=self._processing_loop, name="rk3588-camera-processing", daemon=True)
+            self._camera_thread = threading.Thread(
+                target=self._camera_loop, name="rk3588-camera-capture", daemon=True
+            )
+            self._processing_thread = threading.Thread(
+                target=self._processing_loop,
+                name="rk3588-camera-processing",
+                daemon=True,
+            )
             self._camera_thread.start()
             self._processing_thread.start()
 
@@ -151,7 +198,6 @@ class TrackingRuntime:
         for thread in (self._camera_thread, self._processing_thread):
             if thread and thread.is_alive():
                 thread.join(timeout=5.0)
-        self.privacy.stop()
         self.camera.release()
         self.detector.release()
         self.behavior_detector.release()
@@ -181,7 +227,9 @@ class TrackingRuntime:
     def update_counting_config(self, payload: dict) -> dict:
         if not isinstance(payload, dict):
             raise ValueError("request body must be a JSON object")
-        result = self.stats.configure_counting(payload.get("line"), str(payload.get("direction") or ""))
+        result = self.stats.configure_counting(
+            payload.get("line"), str(payload.get("direction") or "")
+        )
         save_counting_config(
             result["line"],
             result["direction"],
@@ -196,16 +244,17 @@ class TrackingRuntime:
 
     def health(self) -> dict:
         stats = self.stats_snapshot()
-        privacy_required = bool(self.privacy_config.get("face_mosaic_enabled", True))
-        privacy_ok = not privacy_required or bool(stats.get("face_detector_available"))
-        behavior_required = bool(stats.get("behavior_model_enabled")) and bool(stats.get("behavior_model_required"))
-        behavior_ok = not behavior_required or bool(stats.get("behavior_model_available"))
+        behavior_required = bool(stats.get("behavior_model_enabled")) and bool(
+            stats.get("behavior_model_required")
+        )
+        behavior_ok = not behavior_required or bool(
+            stats.get("behavior_model_available")
+        )
         behavior_error = str(stats.get("behavior_model_error") or "")
         ok = (
             bool(stats.get("running"))
             and stats.get("camera_status") == "online"
             and not stats.get("last_error")
-            and privacy_ok
             and behavior_ok
             and not behavior_error
         )
@@ -241,13 +290,16 @@ class TrackingRuntime:
         ):
             data[key] = stats.get(key, 0)
         data["heap_trim_error"] = stats.get("heap_trim_error", "")
-        data.update(self.privacy.snapshot())
+        data.update(self._privacy_snapshot())
         data.update(self.detector.snapshot())
         data.update(self.behavior.snapshot())
         data.update(self.behavior_detector.snapshot())
         data.update(self.behavior_events.snapshot())
         data["phone_detection_available"] = self._phone_detection_available()
-        data["smoking_detection_available"] = self.behavior_detector.smoking_detection_available
+        data["smoking_detection_available"] = (
+            self.behavior_detector.smoking_detection_available
+        )
+        data["behavior_input_frame"] = "raw"
         data["behavior_status"] = self._behavior_status()
         data["cpu_affinity"] = self.cpu_affinity
         data["cpu_affinity_error"] = self.cpu_affinity_error
@@ -257,13 +309,16 @@ class TrackingRuntime:
         data = self.stats.snapshot()
         data.update(self.camera.snapshot())
         data.update(self._pipeline_snapshot())
-        data.update(self.privacy.snapshot())
+        data.update(self._privacy_snapshot())
         data.update(self.detector.snapshot())
         data.update(self.behavior.snapshot())
         data.update(self.behavior_detector.snapshot())
         data.update(self.behavior_events.snapshot())
         data["phone_detection_available"] = self._phone_detection_available()
-        data["smoking_detection_available"] = self.behavior_detector.smoking_detection_available
+        data["smoking_detection_available"] = (
+            self.behavior_detector.smoking_detection_available
+        )
+        data["behavior_input_frame"] = "raw"
         data["behavior_status"] = self._behavior_status()
         data["cpu_affinity"] = self.cpu_affinity
         data["cpu_affinity_error"] = self.cpu_affinity_error
@@ -271,7 +326,9 @@ class TrackingRuntime:
 
     def _pipeline_snapshot(self) -> dict:
         with self._lock:
-            queue_depth = int(self._latest_camera_frame_id > self._last_processed_camera_frame_id)
+            queue_depth = int(
+                self._latest_camera_frame_id > self._last_processed_camera_frame_id
+            )
             return {
                 "capture_queue_capacity": 1,
                 "capture_queue_depth": queue_depth,
@@ -290,7 +347,26 @@ class TrackingRuntime:
         return {"events": self.behavior_events.recent(limit)}
 
     def _phone_detection_available(self) -> bool:
-        return any(self.detector.supports_label(label) for label in ("cell phone", "phone", "mobile phone"))
+        enabled = bool(
+            self.accuracy_profile.get("behavior", {}).get(
+                "phone_detection_enabled", True
+            )
+        )
+        return enabled and any(
+            self.detector.supports_label(label)
+            for label in ("cell phone", "phone", "mobile phone")
+        )
+
+    def _privacy_snapshot(self) -> dict:
+        return {
+            "face_detection_enabled": False,
+            "face_model_loaded": False,
+            "mosaic_enabled": False,
+            "face_mosaic_enabled": False,
+            "privacy_mode": "no_mosaic",
+            "unredacted_video_enabled": True,
+            "unredacted_evidence_enabled": True,
+        }
 
     def _behavior_status(self) -> str:
         if not self.behavior.enabled:
@@ -311,7 +387,9 @@ class TrackingRuntime:
             frame_packet = self.camera.read()
             capture_ms = (time.monotonic() - started) * 1000.0
             if frame_packet is None:
-                self._publish_error(self.camera.error or "Waiting for a readable camera frame")
+                self._publish_error(
+                    self.camera.error or "Waiting for a readable camera frame"
+                )
                 time.sleep(0.2)
                 continue
             with self._frame_ready:
@@ -331,27 +409,38 @@ class TrackingRuntime:
                 frame_packet = self._latest_camera_frame
                 frame_id = self._latest_camera_frame_id
                 capture_ms = self._last_capture_ms
-                has_new_frame = frame_packet is not None and frame_id != self._last_processed_camera_frame_id
+                has_new_frame = (
+                    frame_packet is not None
+                    and frame_id != self._last_processed_camera_frame_id
+                )
                 if has_new_frame:
                     self._last_processed_camera_frame_id = frame_id
                     self._camera_frames_processed += 1
             if not has_new_frame:
                 continue
             try:
-                queue_wait_ms = max(0.0, _ms(time.monotonic() - frame_packet.captured_at))
+                queue_wait_ms = max(
+                    0.0, _ms(time.monotonic() - frame_packet.captured_at)
+                )
                 self._process_frame(frame_packet, capture_ms, queue_wait_ms)
             except Exception as exc:
                 self._publish_error(str(exc))
                 time.sleep(0.05)
 
-    def _process_frame(self, frame_packet: CameraFrame, capture_ms: float, queue_wait_ms: float) -> None:
+    def _process_frame(
+        self, frame_packet: CameraFrame, capture_ms: float, queue_wait_ms: float
+    ) -> None:
         frame = frame_packet.frame
-        detect_this_frame = (self._frame_index % self.detect_every_n_frames) == 0 or not self._detector_has_run
+        detect_this_frame = (
+            self._frame_index % self.detect_every_n_frames
+        ) == 0 or not self._detector_has_run
 
         if detect_this_frame:
             scene_detections = self.detector.detect_scene(frame)
             detections = [
-                item for item in scene_detections if int(item.class_id) == 0 or item.label == "person"
+                item
+                for item in scene_detections
+                if int(item.class_id) == 0 or item.label == "person"
             ]
             detector_profile = dict(self.detector.last_profile)
             self._last_detections = detections
@@ -360,7 +449,11 @@ class TrackingRuntime:
         else:
             detections = list(self._last_detections)
             scene_detections = list(self._last_scene_detections)
-            detector_profile = {"preprocess_ms": 0.0, "inference_ms": 0.0, "postprocess_ms": 0.0}
+            detector_profile = {
+                "preprocess_ms": 0.0,
+                "inference_ms": 0.0,
+                "postprocess_ms": 0.0,
+            }
 
         behavior_detections = self.behavior_detector.detect(frame, self._frame_index)
         behavior_detector_profile = dict(self.behavior_detector.last_profile)
@@ -371,15 +464,15 @@ class TrackingRuntime:
         self.stats.update_tracks(tracks, frame.shape[:2])
         tracking_ms = _ms(time.monotonic() - tracking_started)
 
-        privacy_started = time.monotonic()
-        display = self._prepare_display_frame(frame, tracks, detections)
-        privacy_ms = _ms(time.monotonic() - privacy_started)
+        display = frame.copy()
+        privacy_ms = 0.0
 
         behavior_result = self.behavior.update(
             tracks,
             all_scene_detections,
-            self.privacy.face_boxes(),
             frame.shape[:2],
+            frame_index=self._frame_index,
+            behavior_model_fresh=self.behavior_detector.last_result_is_fresh,
         )
         event_started = time.monotonic()
         for trigger in behavior_result.triggers:
@@ -393,7 +486,9 @@ class TrackingRuntime:
 
         encode_started = time.monotonic()
         stream_frame = self._prepare_stream_frame(display)
-        ok, encoded = cv2.imencode(".jpg", stream_frame, [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality])
+        ok, encoded = cv2.imencode(
+            ".jpg", stream_frame, [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality]
+        )
         encode_ms = _ms(time.monotonic() - encode_started)
         if not ok:
             raise RuntimeError("Could not encode JPEG frame")
@@ -410,9 +505,13 @@ class TrackingRuntime:
             "preprocess_ms": detector_profile.get("preprocess_ms", 0.0),
             "inference_ms": detector_profile.get("inference_ms", 0.0),
             "postprocess_ms": detector_profile.get("postprocess_ms", 0.0),
-            "behavior_preprocess_ms": behavior_detector_profile.get("preprocess_ms", 0.0),
+            "behavior_preprocess_ms": behavior_detector_profile.get(
+                "preprocess_ms", 0.0
+            ),
             "behavior_inference_ms": behavior_detector_profile.get("inference_ms", 0.0),
-            "behavior_postprocess_ms": behavior_detector_profile.get("postprocess_ms", 0.0),
+            "behavior_postprocess_ms": behavior_detector_profile.get(
+                "postprocess_ms", 0.0
+            ),
             "behavior_analysis_ms": behavior_result.analysis_ms,
             "event_output_ms": event_output_ms,
             "tracking_ms": tracking_ms,
@@ -455,18 +554,11 @@ class TrackingRuntime:
         height, width = frame.shape[:2]
         if width == self.stream_width and height == self.stream_height:
             return frame
-        return cv2.resize(frame, (self.stream_width, self.stream_height), interpolation=cv2.INTER_NEAREST)
-
-    def _prepare_display_frame(
-        self,
-        frame: np.ndarray,
-        tracks: Iterable[TrackedPerson],
-        detections: Iterable[Detection],
-    ) -> np.ndarray:
-        track_boxes = [track.bbox for track in tracks]
-        detection_boxes = [detection.bbox for detection in detections]
-        person_boxes = track_boxes or detection_boxes
-        return self.privacy.process(frame, person_boxes)
+        return cv2.resize(
+            frame,
+            (self.stream_width, self.stream_height),
+            interpolation=cv2.INTER_NEAREST,
+        )
 
     def _draw_overlay(
         self,
@@ -482,7 +574,15 @@ class TrackingRuntime:
             bx1, by1, bx2, by2 = [int(value) for value in track.bbox]
             cv2.rectangle(frame, (bx1, by1), (bx2, by2), (42, 166, 85), 2)
             label = f"ID {track.track_id} {track.confidence:.2f}"
-            cv2.putText(frame, label, (bx1, max(24, by1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (42, 166, 85), 2)
+            cv2.putText(
+                frame,
+                label,
+                (bx1, max(24, by1 - 8)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.58,
+                (42, 166, 85),
+                2,
+            )
         colors = {
             "cell phone": (0, 165, 255),
             "phone": (0, 165, 255),
@@ -541,8 +641,8 @@ class TrackingRuntime:
             detector=self.detector.name,
             npu_enabled=self.detector.npu_enabled,
             running=running,
-            privacy_mode=bool(self.privacy_config.get("face_mosaic_enabled", True)),
-            face_mosaic_enabled=bool(self.privacy_config.get("face_mosaic_enabled", True)),
+            privacy_mode="no_mosaic",
+            face_mosaic_enabled=False,
             last_error=last_error,
             available_cameras=self.camera.available_devices,
             timings=timings,
@@ -586,7 +686,9 @@ def _apply_cpu_affinity(value) -> tuple[list[int], str]:
         return [], "CPU affinity is not supported on this platform"
     try:
         requested: set[int] = set()
-        parts = value if isinstance(value, (list, tuple)) else str(value or "").split(",")
+        parts = (
+            value if isinstance(value, (list, tuple)) else str(value or "").split(",")
+        )
         for part in parts:
             text = str(part).strip()
             if not text:
@@ -643,7 +745,9 @@ def index():
 
 @app.get("/video")
 def video():
-    return StreamingResponse(_mjpeg_stream(), media_type="multipart/x-mixed-replace; boundary=frame")
+    return StreamingResponse(
+        _mjpeg_stream(), media_type="multipart/x-mixed-replace; boundary=frame"
+    )
 
 
 @app.get("/api/stats")

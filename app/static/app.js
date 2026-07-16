@@ -21,6 +21,7 @@ const fields = {
   detector: document.querySelector("#detector"),
   npuEnabled: document.querySelector("#npu-enabled"),
   privacy: document.querySelector("#privacy"),
+  cigaretteCandidates: document.querySelector("#cigarette-candidates"),
   behaviorStatus: document.querySelector("#behavior-status"),
   phoneDetector: document.querySelector("#phone-detector"),
   smokingDetector: document.querySelector("#smoking-detector"),
@@ -110,7 +111,8 @@ function renderStats(stats) {
   fields.source.textContent = stats.source || "-";
   fields.detector.textContent = stats.detector || "-";
   fields.npuEnabled.textContent = stats.npu_enabled ? "ON" : "OFF";
-  fields.privacy.textContent = stats.face_mosaic_enabled ? "ON - face/head mosaic" : "OFF";
+  fields.privacy.textContent = stats.privacy_mode === "no_mosaic" ? "NO MOSAIC / UNREDACTED" : "UNKNOWN";
+  fields.cigaretteCandidates.textContent = `${stats.raw_cigarette_candidates || 0} raw / ${stats.verified_cigarette_candidates || 0} verified`;
   fields.behaviorStatus.textContent = stats.behavior_status || "-";
   fields.phoneDetector.textContent = stats.phone_detection_available ? "READY" : "UNAVAILABLE";
   fields.smokingDetector.textContent = stats.smoking_detection_available ? "READY" : "MODEL REQUIRED";

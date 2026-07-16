@@ -1,0 +1,40 @@
+privacy:
+  face_detection_enabled: false
+  mosaic_enabled: false
+  unredacted_video_enabled: true
+  unredacted_evidence_enabled: true
+
+behavior:
+  phone_detection_enabled: true
+  smoking_detection_enabled: true
+  phone_confidence: 0.10
+  phone_call_confidence: 0.10
+  phone_playing_confidence: 0.12
+  unauthorized_photography_confidence: 0.35
+  cigarette_raw_confidence: 0.30
+  cigarette_verified_confidence: 0.42
+  person_smoking_confidence: 0.50
+  smoke_confidence: 0.45
+  fire_confidence: 0.50
+  lighter_confidence: 0.45
+  phone_cigarette_ioa_threshold: 0.48
+  phone_confidence_margin: 0.20
+  temporal_window_frames: 18
+  minimum_verified_frames: 3
+  smoking_duration_ms: 1800
+  event_cooldown_ms: 15000
+  max_candidate_length_person_ratio: 0.13
+  max_candidate_area_person_ratio: 0.012
+  min_candidate_center_person_ratio: 0.125
+  upper_body_ratio: 0.72
+  candidate_motion_ratio: 0.12
+  hard_negative_confidence: 0.22
+  hard_negative_ioa_threshold: 0.50
+  hard_negative_labels: ["bottle", "fork", "knife", "spoon", "remote", "scissors", "toothbrush", "pen", "pencil", "screwdriver", "tool", "stick", "straw", "chopsticks"]
+  head_region:
+    left_ratio: 0.22
+    right_ratio: 0.78
+    top_ratio: 0.00
+    bottom_ratio: 0.32
+    mouth_top_ratio: 0.16
+    mouth_bottom_ratio: 0.36

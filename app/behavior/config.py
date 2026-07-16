@@ -6,7 +6,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict
 
-from app.config import PROJECT_ROOT, load_yaml_file
+from app.config import PROJECT_ROOT, load_accuracy_profile, load_yaml_file
 
 BEHAVIOR_CONFIG_PATH = PROJECT_ROOT / "configs" / "rk3588_behavior_detection.yaml"
 
@@ -24,8 +24,9 @@ DEFAULT_BEHAVIOR_CONFIG: Dict[str, Any] = {
         "primary": {
             "use_for_runtime": False,
             "model_path": "models/yolov8n.rknn",
+            "model_family": "yolov8",
             "class_names": {"0": "person", "67": "cell phone"},
-            "class_confidence_thresholds": {"person": 0.35, "cell phone": 0.20},
+            "class_confidence_thresholds": {"person": 0.35, "cell phone": 0.35},
             "core_mask": "0_1_2",
             "expected_sha256": "ff3a64e6fe180203128c8d42456b458d208d3a1e2217d63683af00d6194e82ea",
         },
@@ -69,7 +70,7 @@ DEFAULT_BEHAVIOR_CONFIG: Dict[str, Any] = {
             "cooldown_ms": 10000,
             "max_gap_frames": 10,
             "rearm_absence_ms": 2500,
-            "max_face_distance_ratio": 1.15,
+            "max_head_distance_ratio": 1.15,
             "max_horizontal_offset_ratio": 1.0,
             "max_vertical_offset_ratio": 0.75,
         },
@@ -80,6 +81,7 @@ DEFAULT_BEHAVIOR_CONFIG: Dict[str, Any] = {
             "cooldown_ms": 10000,
             "max_gap_frames": 10,
             "rearm_absence_ms": 2500,
+            "max_head_exclusion_distance_ratio": 0.75,
         },
         "unauthorized_photography": {
             "duration_ms": 1200,
@@ -122,8 +124,63 @@ DEFAULT_BEHAVIOR_CONFIG: Dict[str, Any] = {
 def load_behavior_config(path: Path = BEHAVIOR_CONFIG_PATH) -> Dict[str, Any]:
     config = deepcopy(DEFAULT_BEHAVIOR_CONFIG)
     _deep_update(config, load_yaml_file(path))
+    _apply_accuracy_profile(config, load_accuracy_profile().get("behavior", {}))
     _validate(config)
     return config
+
+
+def _apply_accuracy_profile(config: Dict[str, Any], profile: Dict[str, Any]) -> None:
+    phone = config.setdefault("phone", {})
+    smoking = config.setdefault("smoking", {})
+    phone["enabled"] = bool(profile.get("phone_detection_enabled", True))
+    smoking["enabled"] = bool(profile.get("smoking_detection_enabled", True))
+    head_region = dict(profile.get("head_region") or {})
+    phone["head_region"] = head_region
+    smoking["head_region"] = head_region
+
+    phone_confidence = float(profile.get("phone_confidence", 0.16))
+    phone.setdefault("phone_call", {})["confidence_threshold"] = float(
+        profile.get("phone_call_confidence", phone_confidence)
+    )
+    phone.setdefault("phone_playing", {})["confidence_threshold"] = float(
+        profile.get("phone_playing_confidence", phone_confidence)
+    )
+    if "unauthorized_photography_confidence" in profile:
+        phone.setdefault("unauthorized_photography", {})["confidence_threshold"] = (
+            float(profile["unauthorized_photography_confidence"])
+        )
+
+    passthrough = (
+        "phone_confidence",
+        "cigarette_raw_confidence",
+        "cigarette_verified_confidence",
+        "person_smoking_confidence",
+        "smoke_confidence",
+        "fire_confidence",
+        "lighter_confidence",
+        "phone_cigarette_ioa_threshold",
+        "phone_confidence_margin",
+        "temporal_window_frames",
+        "minimum_verified_frames",
+        "max_candidate_length_person_ratio",
+        "max_candidate_area_person_ratio",
+        "min_candidate_center_person_ratio",
+        "upper_body_ratio",
+        "candidate_motion_ratio",
+        "hard_negative_confidence",
+        "hard_negative_ioa_threshold",
+        "hard_negative_labels",
+    )
+    for key in passthrough:
+        if key in profile:
+            smoking[key] = profile[key]
+    smoking["duration_ms"] = int(profile.get("smoking_duration_ms", 1800))
+    smoking["cooldown_ms"] = int(profile.get("event_cooldown_ms", 15000))
+
+    model = config.setdefault("models", {}).setdefault("behavior", {})
+    raw_confidence = float(profile.get("cigarette_raw_confidence", 0.30))
+    model["confidence_threshold"] = raw_confidence
+    model["class_confidence_thresholds"] = {"cigarette": raw_confidence}
 
 
 def _deep_update(target: Dict[str, Any], source: Dict[str, Any]) -> None:
@@ -159,14 +216,28 @@ def _validate_behavior_model(config: Dict[str, Any]) -> None:
     labels = {str(value).strip().lower() for value in values}
     if not labels or "" in labels:
         raise ValueError("models.behavior.class_names must contain non-empty labels")
-    selected = {str(value).strip().lower() for value in (model.get("class_filter") or [])}
+    selected = {
+        str(value).strip().lower() for value in (model.get("class_filter") or [])
+    }
     unknown = selected.difference(labels)
     if unknown:
-        raise ValueError(f"models.behavior.class_filter contains unknown labels: {sorted(unknown)}")
-    direct_evidence = {"cigarette", "cigar", "smoking", "person smoking", "hand with cigarette"}
+        raise ValueError(
+            f"models.behavior.class_filter contains unknown labels: {sorted(unknown)}"
+        )
+    direct_evidence = {
+        "cigarette",
+        "cigar",
+        "smoking",
+        "person smoking",
+        "hand with cigarette",
+    }
     effective = selected or labels
-    if bool(config.get("smoking", {}).get("enabled", True)) and not effective.intersection(direct_evidence):
-        raise ValueError("Enabled smoking detection requires a direct cigarette or smoking class")
+    if bool(
+        config.get("smoking", {}).get("enabled", True)
+    ) and not effective.intersection(direct_evidence):
+        raise ValueError(
+            "Enabled smoking detection requires a direct cigarette or smoking class"
+        )
 
 
 def _validate_rule(name: str, value: Dict[str, Any]) -> None:

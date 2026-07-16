@@ -17,6 +17,7 @@ data/*.avi
 data/retinaface_test.jpg
 data/privacy_test*.jpg
 data/behavior_events/
+data/private_accuracy_validation/
 data/debug_frames/
 data/benchmark*.json
 data/stability*.json

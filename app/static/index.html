@@ -16,10 +16,15 @@
         <div class="status-pill" id="camera-pill">Offline</div>
       </header>
 
+      <section class="privacy-warning" role="alert">
+        <strong>当前服务未启用人脸遮挡，仅限受控局域网环境使用。</strong>
+        <span>不得将该服务暴露到公网。</span>
+      </section>
+
       <section class="layout">
         <section class="video-panel" aria-label="Live camera stream">
           <div class="video-wrap">
-            <img id="video-stream" src="/video" alt="Live anonymised camera stream" />
+            <img id="video-stream" src="/video" alt="Live unredacted camera stream" />
             <canvas id="counting-overlay" aria-label="Counting line editor"></canvas>
           </div>
         </section>
@@ -42,6 +47,7 @@
             <div><dt>Detector</dt><dd id="detector">-</dd></div>
             <div><dt>NPU</dt><dd id="npu-enabled">-</dd></div>
             <div><dt>Privacy</dt><dd id="privacy">ON</dd></div>
+            <div><dt>Cigarette candidates</dt><dd id="cigarette-candidates">0 raw / 0 verified</dd></div>
             <div><dt>Behavior status</dt><dd id="behavior-status">-</dd></div>
             <div><dt>Phone detector</dt><dd id="phone-detector">-</dd></div>
             <div><dt>Smoking model</dt><dd id="smoking-detector">-</dd></div>

@@ -5,7 +5,11 @@ from unittest import TestCase
 import numpy as np
 
 from app.behavior.geometry import associate_targets
-from app.detectors.rknn_yolo import COCO_CLASS_NAMES, RKNNYoloDetector, _preprocess_damoyolo
+from app.detectors.rknn_yolo import (
+    COCO_CLASS_NAMES,
+    RKNNYoloDetector,
+    _preprocess_damoyolo,
+)
 from vision.types import Detection, TrackedPerson
 
 
@@ -17,7 +21,9 @@ class RKNNMultiClassPostprocessTests(TestCase):
         detector.nms_threshold = 0.45
         detector.class_confidence_thresholds = {}
         detector.box_filter = {}
-        detector.class_names = {index: label for index, label in enumerate(COCO_CLASS_NAMES)}
+        detector.class_names = {
+            index: label for index, label in enumerate(COCO_CLASS_NAMES)
+        }
         detector.selected_class_ids = {0, 67}
 
         outputs = []
@@ -30,18 +36,24 @@ class RKNNMultiClassPostprocessTests(TestCase):
                 classes[0, 67, 0, 0] = 0.8
             outputs.extend([boxes, classes, auxiliary])
 
-        detections = detector._postprocess_yolov8_heads(outputs, (640, 640), 1.0, (0.0, 0.0))
+        detections = detector._postprocess_yolov8_heads(
+            outputs, (640, 640), 1.0, (0.0, 0.0)
+        )
         self.assertIsNotNone(detections)
         self.assertEqual({item.label for item in detections}, {"person", "cell phone"})
 
-    def test_class_specific_threshold_recovers_weak_phone_without_weak_person(self) -> None:
+    def test_class_specific_threshold_recovers_weak_phone_without_weak_person(
+        self,
+    ) -> None:
         detector = object.__new__(RKNNYoloDetector)
         detector.input_size = 640
         detector.confidence_threshold = 0.35
         detector.class_confidence_thresholds = {67: 0.20}
         detector.nms_threshold = 0.45
         detector.box_filter = {}
-        detector.class_names = {index: label for index, label in enumerate(COCO_CLASS_NAMES)}
+        detector.class_names = {
+            index: label for index, label in enumerate(COCO_CLASS_NAMES)
+        }
         detector.selected_class_ids = {0, 67}
 
         outputs = []
@@ -54,7 +66,9 @@ class RKNNMultiClassPostprocessTests(TestCase):
                 classes[0, 67, 0, 0] = 0.22
             outputs.extend([boxes, classes, auxiliary])
 
-        detections = detector._postprocess_yolov8_heads(outputs, (640, 640), 1.0, (0.0, 0.0))
+        detections = detector._postprocess_yolov8_heads(
+            outputs, (640, 640), 1.0, (0.0, 0.0)
+        )
         self.assertEqual([item.label for item in detections], ["cell phone"])
 
     def test_per_inference_threshold_override_recovers_roi_phone(self) -> None:
@@ -64,7 +78,9 @@ class RKNNMultiClassPostprocessTests(TestCase):
         detector.class_confidence_thresholds = {67: 0.20}
         detector.nms_threshold = 0.45
         detector.box_filter = {}
-        detector.class_names = {index: label for index, label in enumerate(COCO_CLASS_NAMES)}
+        detector.class_names = {
+            index: label for index, label in enumerate(COCO_CLASS_NAMES)
+        }
         detector.selected_class_ids = {0, 67}
         outputs = []
         for branch in range(3):
@@ -75,7 +91,9 @@ class RKNNMultiClassPostprocessTests(TestCase):
                 classes[0, 67, 0, 0] = 0.18
             outputs.extend([boxes, classes, auxiliary])
 
-        default = detector._postprocess_yolov8_heads(outputs, (640, 640), 1.0, (0.0, 0.0))
+        default = detector._postprocess_yolov8_heads(
+            outputs, (640, 640), 1.0, (0.0, 0.0)
+        )
         refined = detector._postprocess_yolov8_heads(
             outputs, (640, 640), 1.0, (0.0, 0.0), {67: 0.16}
         )
@@ -94,8 +112,8 @@ class RKNNMultiClassPostprocessTests(TestCase):
         self.assertTrue(np.allclose(detections[0].bbox, (64.0, 64.0, 320.0, 256.0)))
 
         frame = np.full((2, 4, 3), (1, 2, 3), dtype=np.uint8)
-        prepared = _preprocess_damoyolo(frame, 4)
-        self.assertEqual(prepared.shape, (1, 4, 4, 3))
+        prepared = _preprocess_damoyolo(frame, 32)
+        self.assertEqual(prepared.shape, (1, 32, 32, 3))
         self.assertEqual(prepared[0, 0, 0].tolist(), [3, 2, 1])
 
     def test_damoyolo_output_shape_mismatch_is_explicit(self) -> None:
@@ -123,7 +141,9 @@ class RKNNMultiClassPostprocessTests(TestCase):
         scores[0, 12, 0] = 0.92
         boxes[0, 12] = [40.0, 100.0, 600.0, 130.0]
 
-        self.assertEqual(detector._postprocess_damoyolo([scores, boxes], (640, 640)), [])
+        self.assertEqual(
+            detector._postprocess_damoyolo([scores, boxes], (640, 640)), []
+        )
 
     def test_damoyolo_suppresses_nested_duplicate_boxes(self) -> None:
         detector = _damo_detector()
@@ -148,7 +168,9 @@ class TargetAssociationTests(TestCase):
             TrackedPerson(2, (150, 0, 350, 400), 0.9),
         ]
         phone = Detection((250, 160, 280, 210), 0.8, 67, "cell phone")
-        assigned = associate_targets(tracks, [phone], ["cell phone"], expansion_ratio=0.2)
+        assigned = associate_targets(
+            tracks, [phone], ["cell phone"], expansion_ratio=0.2
+        )
         self.assertEqual(assigned[1], [])
         self.assertEqual(assigned[2], [phone])
 
