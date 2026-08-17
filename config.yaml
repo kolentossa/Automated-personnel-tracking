@@ -54,10 +54,10 @@ tracking:
 
 counting:
   line:
-    x1: 722.725
-    y1: 1.135
-    x2: 697.587
-    y2: 713.388
+    x1: 643.12
+    y1: 2.531
+    x2: 650.103
+    y2: 714.785
   direction:
     mode: right_to_left
   cooldown_frames: 8
