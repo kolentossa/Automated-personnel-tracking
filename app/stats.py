@@ -69,6 +69,7 @@ class StatsManager:
         self.frame_height = int(config.get("_default_frame_height") or 540)
         self._lock = threading.RLock()
         self._track_states: Dict[int, _TrackCrossingState] = {}
+        self._latest_track_points: Dict[int, Point] = {}
         self._track_frame_index = 0
         self._events: Deque[dict] = deque(maxlen=20)
         self.current_occupancy = 0
@@ -98,16 +99,19 @@ class StatsManager:
     def update_tracks(self, tracks: Iterable[TrackedPerson], frame_shape: Sequence[int]) -> None:
         track_list = list(tracks)
         height, width = int(frame_shape[0]), int(frame_shape[1])
-        line = self.line_for_frame(width, height)
         with self._lock:
+            line = self.line_for_frame(width, height)
             self._track_frame_index += 1
             tracking_frame = self._track_frame_index
             self.frame_width = width
             self.frame_height = height
             self.active_tracks = len(track_list)
             self.visible_persons = len(track_list)
+            self._latest_track_points = {
+                track.track_id: bbox_centroid(track.bbox) for track in track_list
+            }
             for track in track_list:
-                distance = _signed_distance_to_line(bbox_centroid(track.bbox), line)
+                distance = _signed_distance_to_line(self._latest_track_points[track.track_id], line)
                 side = _side_outside_margin(distance, self.hysteresis_px)
                 stable_side = _side_outside_margin(distance, self.rearm_distance_px)
                 state = self._track_states.setdefault(track.track_id, _TrackCrossingState())
@@ -117,14 +121,15 @@ class StatsManager:
                 ):
                     state.crossed_corridor = True
 
-                if stable_side == 0:
+                confirmation_side = side if state.confirmed_side is None else stable_side
+                if confirmation_side == 0:
                     state.candidate_side = 0
                     state.candidate_frames = 0
                     continue
-                if state.candidate_side == stable_side:
+                if state.candidate_side == confirmation_side:
                     state.candidate_frames += 1
                 else:
-                    state.candidate_side = stable_side
+                    state.candidate_side = confirmation_side
                     state.candidate_frames = 1
                 if state.candidate_frames < self.confirmation_frames:
                     continue
@@ -132,10 +137,10 @@ class StatsManager:
                 previous = state.confirmed_side
                 state.candidate_frames = self.confirmation_frames
                 if previous is None:
-                    state.confirmed_side = stable_side
+                    state.confirmed_side = confirmation_side
                     state.crossed_corridor = False
                     continue
-                if previous == stable_side:
+                if previous == confirmation_side:
                     state.crossed_corridor = False
                     continue
                 if not state.crossed_corridor:
@@ -143,9 +148,9 @@ class StatsManager:
                 if tracking_frame - state.last_event_frame < self.cooldown_frames:
                     continue
 
-                state.confirmed_side = stable_side
+                state.confirmed_side = confirmation_side
                 state.crossed_corridor = False
-                direction = _direction(previous, stable_side)
+                direction = _direction(previous, confirmation_side)
                 event_type = "ENTER" if direction == self.enter_direction else "EXIT"
                 if self.count_once_per_direction_per_track:
                     if event_type == "ENTER" and state.entered_counted:
@@ -214,6 +219,7 @@ class StatsManager:
             self.total_exited = 0
             self._events.clear()
             self._track_states.clear()
+            self._latest_track_points.clear()
             self._track_frame_index = 0
 
     def configure_counting(self, line: Dict[str, Any], direction: str) -> dict:
@@ -228,9 +234,19 @@ class StatsManager:
             self.config["line"] = line_dict
             self.config["direction"] = {"mode": direction_mode}
             self.config.pop("enter_direction", None)
-            self._track_states.clear()
-            self._track_frame_index = 0
+            self._track_states = self._states_rebased_to_line(parsed_line)
             return self.counting_config()
+
+    def _states_rebased_to_line(self, line: Line) -> Dict[int, _TrackCrossingState]:
+        states: Dict[int, _TrackCrossingState] = {}
+        for track_id, point in self._latest_track_points.items():
+            side = _side_outside_margin(_signed_distance_to_line(point, line), 0.0)
+            if side != 0:
+                states[track_id] = _TrackCrossingState(
+                    confirmed_side=side,
+                    last_seen_frame=self._track_frame_index,
+                )
+        return states
 
     def counting_config(self) -> dict:
         with self._lock:

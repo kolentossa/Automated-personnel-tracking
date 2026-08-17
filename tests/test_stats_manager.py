@@ -53,6 +53,29 @@ class StatsManagerCrossingTests(TestCase):
         self.assertEqual(snapshot["total_entered"], 1)
         self.assertEqual(snapshot["current_occupancy"], 1)
 
+    def test_initial_side_can_arm_between_inner_and_outer_boundaries(self):
+        counter = _counter(cooldown_frames=0)
+        _update(counter, [40, 40, 40, 70, 70, 70])
+
+        snapshot = counter.snapshot()
+        self.assertEqual(snapshot["total_entered"], 1)
+        self.assertEqual(snapshot["total_exited"], 0)
+
+    def test_line_update_rebases_current_track_without_missing_next_crossing(self):
+        counter = _counter(cooldown_frames=0)
+        _update(counter, [30, 30, 30])
+
+        counter.configure_counting(
+            {"x1": 40, "y1": 0, "x2": 40, "y2": 100},
+            "left_to_right",
+        )
+        self.assertEqual(counter.snapshot()["recent_events"], [])
+
+        _update(counter, [60, 60, 60])
+        snapshot = counter.snapshot()
+        self.assertEqual(snapshot["total_entered"], 1)
+        self.assertEqual(snapshot["total_exited"], 0)
+
     def test_line_lingering_after_crossing_does_not_repeat_event(self):
         counter = _counter()
         _update(counter, [30, 30, 30, 70, 70, 70])

@@ -429,6 +429,8 @@ counting:
 `rearm_distance_px` boundary forms two confirmation zones: a track is counted only after moving
 from one zone to the other and remaining there for `confirmation_frames` updates. This prevents
 near-line jitter while allowing the same track ID to make multiple genuine return crossings.
+When a new line is saved, currently visible tracks are immediately rebased to the new geometry,
+so they do not need to leave the camera view before their next crossing can be counted.
 `count_once_per_direction_per_track` remains available for deployments that require permanent
 per-ID deduplication, but it is disabled for normal entry/exit counting.
 
