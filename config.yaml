@@ -5,7 +5,7 @@ server:
 camera:
   source_type: camera
   camera_device: /dev/video11
-  capture_backend: gstreamer
+  capture_backend: v4l2
   auto_detect: true
   width: 1280
   height: 720
@@ -54,13 +54,18 @@ tracking:
 
 counting:
   line:
-    x1: 640
-    y1: 0
-    x2: 640
-    y2: 720
+    x1: 600.732
+    y1: 6.137
+    x2: 594.272
+    y2: 710.23
   direction:
-    mode: left_to_right
-  cooldown_frames: 20
+    mode: right_to_left
+  cooldown_frames: 8
+  hysteresis_px: 64
+  rearm_distance_px: 96
+  confirmation_frames: 5
+  track_state_ttl_frames: 120
+  count_once_per_direction_per_track: false
 privacy:
   face_mosaic_enabled: true
   face_detector: retinaface-onnx

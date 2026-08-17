@@ -9,7 +9,7 @@ The first demo does not require a USB camera. It generates a synthetic `data/sam
 The optimized camera service is deployed on the RK3588 at:
 
 ```text
-http://192.168.1.213:8001
+http://192.168.137.157:8001
 ```
 
 It reads `/dev/video11`, uses YOLOv8n RKNN on the NPU, tracks anonymous person
@@ -21,16 +21,24 @@ Current measured operating point:
 
 ```text
 camera: /dev/video11
-fps: approximately 30
-rolling application latency: approximately 12-16 ms
+fps: approximately 40
+rolling application latency: approximately 30 ms
 detector: rknn-yolov8n
 npu_enabled: true
 face_detector: retinaface-mobile320-onnx
 ```
 
-The service currently runs as a project-local background process. No systemd
-unit or boot-time service has been installed, so it must be started again after
-the board reboots.
+The service is managed by the `cat` user's systemd instance. User lingering is
+enabled, so it starts at boot without an interactive login and restarts after a
+process failure. The legacy service on port `8000` remains disabled.
+
+Useful service commands:
+
+```bash
+systemctl --user status person-tracking.service
+systemctl --user restart person-tracking.service
+journalctl --user -u person-tracking.service -n 100 --no-pager
+```
 
 ## Architecture
 
@@ -241,11 +249,10 @@ cd ~/projects/person-tracking
 ./scripts/run_dev.sh
 ```
 
-For the current project-local background deployment:
+Install or refresh the boot-time user service without `sudo`:
 
 ```bash
-mkdir -p logs
-nohup ./scripts/run_dev.sh > logs/uvicorn-8001-production.log 2>&1 &
+./scripts/install_autostart.sh
 ```
 
 Open the dashboard from another LAN device by replacing the address with the
@@ -410,8 +417,20 @@ counting:
     y2: 720
   direction:
     mode: left_to_right
-  cooldown_frames: 20
+  cooldown_frames: 8
+  hysteresis_px: 64
+  rearm_distance_px: 96
+  confirmation_frames: 5
+  track_state_ttl_frames: 120
+  count_once_per_direction_per_track: false
 ```
+
+`hysteresis_px` creates an ignored corridor around the line. The wider
+`rearm_distance_px` boundary forms two confirmation zones: a track is counted only after moving
+from one zone to the other and remaining there for `confirmation_frames` updates. This prevents
+near-line jitter while allowing the same track ID to make multiple genuine return crossings.
+`count_once_per_direction_per_track` remains available for deployments that require permanent
+per-ID deduplication, but it is disabled for normal entry/exit counting.
 
 API examples:
 

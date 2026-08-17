@@ -147,12 +147,26 @@ class TrackingRuntime:
         save_counting_config(
             result["line"],
             result["direction"],
-            int(result.get("cooldown_frames") or 20),
+            int(result.get("cooldown_frames") or 8),
+            hysteresis_px=float(result.get("hysteresis_px") or 64),
+            rearm_distance_px=float(result.get("rearm_distance_px") or 96),
+            confirmation_frames=int(result.get("confirmation_frames") or 5),
+            track_state_ttl_frames=int(result.get("track_state_ttl_frames") or 120),
+            count_once_per_direction_per_track=bool(
+                result.get("count_once_per_direction_per_track", False)
+            ),
         )
         self.config["counting"] = {
             "line": result["line"],
             "direction": {"mode": result["direction"]},
-            "cooldown_frames": int(result.get("cooldown_frames") or 20),
+            "cooldown_frames": int(result.get("cooldown_frames") or 8),
+            "hysteresis_px": float(result.get("hysteresis_px") or 64),
+            "rearm_distance_px": float(result.get("rearm_distance_px") or 96),
+            "confirmation_frames": int(result.get("confirmation_frames") or 5),
+            "track_state_ttl_frames": int(result.get("track_state_ttl_frames") or 120),
+            "count_once_per_direction_per_track": bool(
+                result.get("count_once_per_direction_per_track", False)
+            ),
         }
         return result
 

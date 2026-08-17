@@ -61,7 +61,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "counting": {
         "line": {"x1": 640, "y1": 0, "x2": 640, "y2": 720},
         "direction": {"mode": "left_to_right"},
-        "cooldown_frames": 20,
+        "cooldown_frames": 8,
+        "hysteresis_px": 64,
+        "rearm_distance_px": 96,
+        "confirmation_frames": 5,
+        "track_state_ttl_frames": 120,
+        "count_once_per_direction_per_track": False,
     },
     "privacy": {
         "face_mosaic_enabled": True,
@@ -103,12 +108,27 @@ def project_path(value: str | Path) -> Path:
 def save_counting_config(
     line: Dict[str, Any],
     direction: str,
-    cooldown_frames: int = 20,
+    cooldown_frames: int = 8,
     path: Path = CONFIG_PATH,
+    *,
+    hysteresis_px: float = 64,
+    rearm_distance_px: float = 96,
+    confirmation_frames: int = 5,
+    track_state_ttl_frames: int = 120,
+    count_once_per_direction_per_track: bool = False,
 ) -> None:
     """Persist only the counting block while preserving the rest of config.yaml."""
 
-    block = _render_counting_block(line, direction, cooldown_frames)
+    block = _render_counting_block(
+        line,
+        direction,
+        cooldown_frames,
+        hysteresis_px,
+        rearm_distance_px,
+        confirmation_frames,
+        track_state_ttl_frames,
+        count_once_per_direction_per_track,
+    )
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     path.write_text(_replace_top_level_block(text, "counting", block), encoding="utf-8")
 
@@ -121,7 +141,16 @@ def _deep_update(target: Dict[str, Any], source: Dict[str, Any]) -> None:
             target[key] = value
 
 
-def _render_counting_block(line: Dict[str, Any], direction: str, cooldown_frames: int) -> str:
+def _render_counting_block(
+    line: Dict[str, Any],
+    direction: str,
+    cooldown_frames: int,
+    hysteresis_px: float,
+    rearm_distance_px: float,
+    confirmation_frames: int,
+    track_state_ttl_frames: int,
+    count_once_per_direction_per_track: bool,
+) -> str:
     return "\n".join(
         [
             "counting:",
@@ -133,6 +162,12 @@ def _render_counting_block(line: Dict[str, Any], direction: str, cooldown_frames
             "  direction:",
             f"    mode: {direction}",
             f"  cooldown_frames: {int(cooldown_frames)}",
+            f"  hysteresis_px: {_format_number(hysteresis_px)}",
+            f"  rearm_distance_px: {_format_number(rearm_distance_px)}",
+            f"  confirmation_frames: {int(confirmation_frames)}",
+            f"  track_state_ttl_frames: {int(track_state_ttl_frames)}",
+            "  count_once_per_direction_per_track: "
+            + ("true" if count_once_per_direction_per_track else "false"),
         ]
     )
 

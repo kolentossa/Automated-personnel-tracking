@@ -5,6 +5,8 @@ from __future__ import annotations
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass
+from math import hypot
 from typing import Any, Deque, Dict, Iterable, Optional, Sequence, Tuple
 
 from vision.types import TrackedPerson, bbox_centroid
@@ -33,19 +35,41 @@ DIRECTION_TO_ENTER = {
 ENTER_TO_DIRECTION = {value: key for key, value in DIRECTION_TO_ENTER.items()}
 
 
+@dataclass
+class _TrackCrossingState:
+    confirmed_side: Optional[int] = None
+    candidate_side: int = 0
+    candidate_frames: int = 0
+    crossed_corridor: bool = False
+    last_seen_frame: int = 0
+    last_event_frame: int = -1_000_000
+    entered_counted: bool = False
+    exited_counted: bool = False
+
+
 class StatsManager:
     def __init__(self, config: Dict[str, Any]) -> None:
         self.config = config
         self.direction_mode = _direction_mode_from_config(config)
         self.enter_direction = DIRECTION_TO_ENTER[self.direction_mode]
-        self.cooldown_frames = int(config.get("cooldown_frames") or 20)
+        self.cooldown_frames = _int_setting(config, "cooldown_frames", 8, minimum=0)
+        self.hysteresis_px = _float_setting(config, "hysteresis_px", 64.0, minimum=1.0)
+        self.rearm_distance_px = max(
+            self.hysteresis_px + 1.0,
+            _float_setting(config, "rearm_distance_px", 96.0, minimum=1.0),
+        )
+        self.confirmation_frames = _int_setting(config, "confirmation_frames", 5, minimum=1)
+        self.track_state_ttl_frames = _int_setting(config, "track_state_ttl_frames", 120, minimum=1)
+        self.count_once_per_direction_per_track = _bool_setting(
+            config, "count_once_per_direction_per_track", False
+        )
         self._line_arg = config.get("line", "auto")
         self._line: Optional[Line] = None
         self.frame_width = int(config.get("_default_frame_width") or 960)
         self.frame_height = int(config.get("_default_frame_height") or 540)
         self._lock = threading.RLock()
-        self._last_sides: Dict[int, int] = {}
-        self._cooldowns: Dict[int, int] = {}
+        self._track_states: Dict[int, _TrackCrossingState] = {}
+        self._track_frame_index = 0
         self._events: Deque[dict] = deque(maxlen=20)
         self.current_occupancy = 0
         self.total_entered = 0
@@ -76,24 +100,73 @@ class StatsManager:
         height, width = int(frame_shape[0]), int(frame_shape[1])
         line = self.line_for_frame(width, height)
         with self._lock:
+            self._track_frame_index += 1
+            tracking_frame = self._track_frame_index
             self.frame_width = width
             self.frame_height = height
             self.active_tracks = len(track_list)
             self.visible_persons = len(track_list)
             for track in track_list:
-                side = _side_of_line(bbox_centroid(track.bbox), line)
-                if side == 0:
+                distance = _signed_distance_to_line(bbox_centroid(track.bbox), line)
+                side = _side_outside_margin(distance, self.hysteresis_px)
+                stable_side = _side_outside_margin(distance, self.rearm_distance_px)
+                state = self._track_states.setdefault(track.track_id, _TrackCrossingState())
+                state.last_seen_frame = tracking_frame
+                if state.confirmed_side is not None and (
+                    side == 0 or side != state.confirmed_side
+                ):
+                    state.crossed_corridor = True
+
+                if stable_side == 0:
+                    state.candidate_side = 0
+                    state.candidate_frames = 0
                     continue
-                previous = self._last_sides.get(track.track_id)
-                cooldown = self._cooldowns.get(track.track_id, 0)
-                if previous is not None and previous != side and cooldown <= 0:
-                    direction = _direction(previous, side)
-                    event_type = "ENTER" if direction == self.enter_direction else "EXIT"
-                    self._record_event(track.track_id, event_type)
-                    self._cooldowns[track.track_id] = self.cooldown_frames
-                self._last_sides[track.track_id] = side
-                if track.track_id in self._cooldowns:
-                    self._cooldowns[track.track_id] = max(0, self._cooldowns[track.track_id] - 1)
+                if state.candidate_side == stable_side:
+                    state.candidate_frames += 1
+                else:
+                    state.candidate_side = stable_side
+                    state.candidate_frames = 1
+                if state.candidate_frames < self.confirmation_frames:
+                    continue
+
+                previous = state.confirmed_side
+                state.candidate_frames = self.confirmation_frames
+                if previous is None:
+                    state.confirmed_side = stable_side
+                    state.crossed_corridor = False
+                    continue
+                if previous == stable_side:
+                    state.crossed_corridor = False
+                    continue
+                if not state.crossed_corridor:
+                    continue
+                if tracking_frame - state.last_event_frame < self.cooldown_frames:
+                    continue
+
+                state.confirmed_side = stable_side
+                state.crossed_corridor = False
+                direction = _direction(previous, stable_side)
+                event_type = "ENTER" if direction == self.enter_direction else "EXIT"
+                if self.count_once_per_direction_per_track:
+                    if event_type == "ENTER" and state.entered_counted:
+                        continue
+                    if event_type == "EXIT" and state.exited_counted:
+                        continue
+                self._record_event(track.track_id, event_type)
+                if event_type == "ENTER":
+                    state.entered_counted = True
+                else:
+                    state.exited_counted = True
+                state.last_event_frame = tracking_frame
+
+            stale_before = tracking_frame - self.track_state_ttl_frames
+            stale_track_ids = [
+                track_id
+                for track_id, state in self._track_states.items()
+                if state.last_seen_frame < stale_before
+            ]
+            for track_id in stale_track_ids:
+                del self._track_states[track_id]
 
     def update_runtime(
         self,
@@ -140,8 +213,8 @@ class StatsManager:
             self.total_entered = 0
             self.total_exited = 0
             self._events.clear()
-            self._last_sides.clear()
-            self._cooldowns.clear()
+            self._track_states.clear()
+            self._track_frame_index = 0
 
     def configure_counting(self, line: Dict[str, Any], direction: str) -> dict:
         line_dict = _coerce_line_dict(line)
@@ -155,8 +228,8 @@ class StatsManager:
             self.config["line"] = line_dict
             self.config["direction"] = {"mode": direction_mode}
             self.config.pop("enter_direction", None)
-            self._last_sides.clear()
-            self._cooldowns.clear()
+            self._track_states.clear()
+            self._track_frame_index = 0
             return self.counting_config()
 
     def counting_config(self) -> dict:
@@ -166,6 +239,11 @@ class StatsManager:
                 "line": _line_as_dict(line),
                 "direction": self.direction_mode,
                 "cooldown_frames": self.cooldown_frames,
+                "hysteresis_px": _clean_number(self.hysteresis_px),
+                "rearm_distance_px": _clean_number(self.rearm_distance_px),
+                "confirmation_frames": self.confirmation_frames,
+                "track_state_ttl_frames": self.track_state_ttl_frames,
+                "count_once_per_direction_per_track": self.count_once_per_direction_per_track,
                 "frame_size": {"width": self.frame_width, "height": self.frame_height},
             }
 
@@ -243,12 +321,23 @@ def _parse_line(value: Any, width: int, height: int) -> Line:
 
 
 def _side_of_line(point: Point, line: Line) -> int:
+    return _side_outside_margin(_signed_distance_to_line(point, line), 0.0)
+
+
+def _signed_distance_to_line(point: Point, line: Line) -> float:
     (x1, y1), (x2, y2) = line
     px, py = point
+    length = hypot(x2 - x1, y2 - y1)
+    if length <= 0.0:
+        return 0.0
     cross = (x2 - x1) * (py - y1) - (y2 - y1) * (px - x1)
-    if cross > 0:
+    return cross / length
+
+
+def _side_outside_margin(distance: float, margin: float) -> int:
+    if distance > margin:
         return 1
-    if cross < 0:
+    if distance < -margin:
         return -1
     return 0
 
@@ -306,3 +395,22 @@ def _clean_number(value: float) -> int | float:
     if number.is_integer():
         return int(number)
     return round(number, 3)
+
+
+def _int_setting(config: Dict[str, Any], key: str, default: int, minimum: int) -> int:
+    value = config.get(key)
+    return max(minimum, int(default if value is None else value))
+
+
+def _float_setting(config: Dict[str, Any], key: str, default: float, minimum: float) -> float:
+    value = config.get(key)
+    return max(minimum, float(default if value is None else value))
+
+
+def _bool_setting(config: Dict[str, Any], key: str, default: bool) -> bool:
+    value = config.get(key)
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off"}
+    return bool(value)
