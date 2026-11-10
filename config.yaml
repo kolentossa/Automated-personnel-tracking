@@ -1,0 +1,70 @@
+camera:
+  camera_device: /dev/video11
+  auto_detect: true
+  width: 1280
+  height: 720
+  fps: 30
+  retry_interval_sec: 3.0
+
+detector:
+  model_path: models/crowdhuman448_sigmoid_yolov5m_int8.rknn
+  input_size: 448
+  confidence_threshold: 0.35
+  nms_threshold: 0.45
+
+performance:
+  target_fps: 30
+  cpu_affinity: "4-7"
+  timing_window_frames: 30
+
+stream:
+  jpeg_quality: 74
+  width: 800
+  height: 450
+
+tracking:
+  track_high_thresh: 0.35
+  track_low_thresh: 0.15
+  new_track_thresh: 0.35
+  match_thresh: 0.8
+  lost_track_buffer_seconds: 4.0
+  prediction_display_seconds: 0.15
+  reference_fps: 30
+
+counting:
+  line:
+    x1: 1098.192
+    y1: 9.928
+    x2: 1092.683
+    y2: 702.267
+  direction:
+    mode: right_to_left
+  anchor: auto
+  cooldown_frames: 8
+  hysteresis_px: 64
+  rearm_distance_px: 96
+  confirmation_frames: 5
+  track_state_ttl_frames: 120
+  count_once_per_direction_per_track: false
+  time_confirmation_enabled: true
+  state_recovery_enabled: true
+  confirmation_max_gap_seconds: 0.2
+  state_recovery_max_gap_seconds: 0.6
+privacy:
+  face_mosaic_enabled: true
+  face_detector: retinaface-onnx
+  face_model_path: models/RetinaFace_mobile320.onnx
+  face_input_size: 320
+  face_confidence_threshold: 0.6
+  face_nms_threshold: 0.4
+  face_detector_threads: 1
+  face_detect_every_n_frames: 5
+  face_result_max_age_ms: 1000
+  face_mosaic_padding: 0.25
+  face_tracking_enabled: true
+  face_tracking_min_points: 4
+  face_tracking_win_size: 31
+  face_tracking_max_level: 3
+  face_tracking_max_motion_px: 96
+  head_fallback_enabled: true
+  mosaic_strength: 14

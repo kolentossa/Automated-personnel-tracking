@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title data-i18n="page_title">Personnel tracking · RK3588</title>
+    <link rel="stylesheet" href="/static/style.css?v=20261103d">
+    <script type="module" src="/static/app.js?v=20261103d"></script>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow" data-i18n="eyebrow">RK3588 · Local personnel tracking</p>
+          <h1 data-i18n="title">Personnel tracking</h1>
+          <p id="service-state" role="status" data-i18n="connecting_service">Connecting to service</p>
+        </div>
+        <div class="header-actions">
+          <label class="language-control" for="language-select">
+            <span data-i18n="language">Language</span>
+            <select id="language-select">
+              <option value="en" lang="en">English</option>
+              <option value="zh" lang="zh-CN">中文</option>
+            </select>
+          </label>
+          <span class="status-pill" id="camera-pill" data-i18n="connecting">Connecting</span>
+        </div>
+      </header>
+
+      <section class="counts" aria-label="Entry and exit counts" data-i18n-aria="counts_label">
+        <article class="count-card primary">
+          <h2 data-i18n="current">Current occupancy</h2>
+          <p><strong id="current-occupancy">0</strong><span data-i18n="people">people</span></p>
+        </article>
+        <article class="count-card">
+          <h2 data-i18n="entered">Total entered</h2>
+          <p><strong id="total-entered">0</strong><span data-i18n="people">people</span></p>
+        </article>
+        <article class="count-card">
+          <h2 data-i18n="exited">Total exited</h2>
+          <p><strong id="total-exited">0</strong><span data-i18n="people">people</span></p>
+        </article>
+      </section>
+
+      <div class="layout">
+        <section class="panel video-panel" aria-labelledby="video-title">
+          <header class="panel-heading">
+            <h2 id="video-title" data-i18n="live_video">Live view</h2>
+            <span class="panel-note" data-i18n="local_processing">Local processing</span>
+          </header>
+          <div class="video-wrap">
+            <img id="video-stream" src="/video" alt="Live camera view with anonymous person tracking" data-i18n-alt="video_alt">
+            <canvas id="counting-overlay" aria-label="Counting line editor: select two points on the video" data-i18n-aria="overlay_label"></canvas>
+          </div>
+          <footer class="video-footer">
+            <span id="privacy" data-i18n="privacy_loading">Reading privacy settings</span>
+            <span data-i18n="temporary_ids">IDs are temporary tracking labels</span>
+            <span id="camera-status" hidden></span>
+          </footer>
+        </section>
+
+        <aside class="side-column">
+          <section class="panel events-section" aria-labelledby="events-title">
+            <header class="panel-heading">
+              <h2 id="events-title" data-i18n="recent_events">Recent crossings</h2>
+              <span class="panel-note" data-i18n="latest_records">Latest events</span>
+            </header>
+            <ol id="events"><li class="empty" data-i18n="no_events">No crossing events yet</li></ol>
+          </section>
+
+          <details class="panel counting-config" id="counting-settings">
+            <summary data-i18n="counting_settings">Counting settings</summary>
+            <div class="settings-content">
+              <p class="help-text" data-i18n="counting_help">Select two points on the video, then save the line. Changing the entry direction saves immediately.</p>
+              <div class="line-readout"><span data-i18n="counting_line">Counting line</span><strong id="counting-line">—</strong></div>
+              <p class="field-title" data-i18n="entry_direction">Entry direction</p>
+              <div class="direction-toggle" role="radiogroup" aria-label="Entry direction" data-i18n-aria="entry_direction">
+                <button class="direction-option" type="button" role="radio" aria-checked="true" data-direction="left_to_right" data-i18n="left_to_right">Left → Right</button>
+                <button class="direction-option" type="button" role="radio" aria-checked="false" data-direction="right_to_left" data-i18n="right_to_left">Right → Left</button>
+              </div>
+              <label class="counting-field" for="counting-anchor">
+                <span data-i18n="anchor">Counting point</span>
+                <select id="counting-anchor">
+                  <option value="auto" data-i18n="auto">Auto</option>
+                  <option value="center" data-i18n="center">Box centre</option>
+                  <option value="bottom_center" data-i18n="bottom_center">Foot point</option>
+                </select>
+              </label>
+              <div class="counting-distances">
+                <label class="counting-field" for="counting-inner">
+                  <span data-i18n="dead_zone">Dead zone (px)</span>
+                  <input id="counting-inner" type="number" min="1" step="1" value="64">
+                </label>
+                <label class="counting-field" for="counting-outer">
+                  <span data-i18n="confirmation">Confirmation (px)</span>
+                  <input id="counting-outer" type="number" min="2" step="1" value="96">
+                </label>
+              </div>
+              <p id="counting-warning" role="status"></p>
+              <button id="save-counting-button" class="primary-button" type="button" data-i18n="save">Save settings</button>
+              <p id="counting-config-state" role="status"></p>
+            </div>
+          </details>
+        </aside>
+      </div>
+
+      <footer class="page-footer">
+        <p data-i18n="reset_help">Reset clears counts and recent events. The video keeps running.</p>
+        <button id="reset-button" type="button" data-i18n="reset">Reset counts</button>
+      </footer>
+    </main>
+  </body>
+</html>

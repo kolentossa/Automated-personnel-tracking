@@ -1,0 +1,17 @@
+[Unit]
+Description=RK3588 Person Tracking Web Service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/person-tracking
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStartPre=/usr/bin/test -x %h/.venvs/person-tracking/bin/python
+ExecStart=%h/.venvs/person-tracking/bin/python -B -m uvicorn app.main:app --host 0.0.0.0 --port 8001 --timeout-graceful-shutdown 5
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+KillMode=mixed
+
+[Install]
+WantedBy=default.target
