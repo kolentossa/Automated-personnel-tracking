@@ -135,7 +135,7 @@ def _postprocess(
         boxes, scores = boxes[top], scores[top]
     height, width = map(int, frame_shape[:2])
     boxes = _scale_boxes_from_letterbox(boxes, ratio, pad, width, height)
-    valid = np.isfinite(boxes).all(axis=1) & np.isfinite(scores)
+    valid = np.isfinite(boxes).all(axis=1)
     valid &= (boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1])
     boxes, scores = boxes[valid], scores[valid]
     return [Detection(tuple(float(v) for v in boxes[i]), float(scores[i]), 0, "person")

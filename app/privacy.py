@@ -9,7 +9,6 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
-from functools import lru_cache
 from itertools import product
 from math import ceil
 from pathlib import Path
@@ -169,7 +168,7 @@ def _worker_loop(privacy: SimpleNamespace) -> None:
             # 只取最新待处理帧；慢检测不会让旧画面排成越来越长的队列。
             frame = privacy._pending_frame
             privacy._pending_frame = None
-        if frame is None or privacy._detector is None:
+        if frame is None:
             continue
         try:
             boxes = detect_faces(privacy._detector, frame)
@@ -366,14 +365,10 @@ def _seed_flow_points(gray: np.ndarray, box: Sequence[float]) -> np.ndarray:
     return np.asarray([[[x, y]] for y in sample_y for x in sample_x], dtype=np.float32)
 
 
-def _mosaic_region_in_place(frame: np.ndarray, box: Sequence[float], mosaic_strength: int) -> None:
-    clipped = _clip_box(frame, box)
-    if clipped is None:
-        return
-    x1, y1, x2, y2 = clipped
+def _mosaic_region_in_place(frame: np.ndarray, box: Box, mosaic_strength: int) -> None:
+    """遮挡已裁到图像内的非空整数框；调用方负责裁框。"""
+    x1, y1, x2, y2 = box
     region = frame[y1:y2, x1:x2]
-    if region.size == 0:
-        return
     strength = max(4, int(mosaic_strength))
     small_width = max(1, region.shape[1] // strength)
     small_height = max(1, region.shape[0] // strength)
@@ -504,7 +499,6 @@ def _letterbox(frame: np.ndarray, size: int, color: int) -> Tuple[np.ndarray, fl
     return canvas, ratio, offset_x, offset_y
 
 
-@lru_cache(maxsize=4)
 def _prior_boxes(image_size: int) -> np.ndarray:
     """按 RetinaFace 三层输出的步长和尺寸生成先验框，顺序须与模型输出一致。"""
     anchors: List[float] = []

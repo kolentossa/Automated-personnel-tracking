@@ -75,11 +75,14 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 
 
 def load_config(path: Path = CONFIG_PATH) -> Dict[str, Any]:
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    return _parse_config(text)
+
+
+def _parse_config(text: str) -> Dict[str, Any]:
     """深复制默认配置，避免一次运行或测试修改了下次加载的初始值。"""
     config = deepcopy(DEFAULT_CONFIG)
-    if path.exists():
-        parsed = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        _deep_update(config, parsed)
+    _deep_update(config, yaml.safe_load(text) or {})
     return config
 
 
@@ -128,7 +131,7 @@ def save_counting_config(
 
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     # 页面只编辑线和基础距离，已有的时间确认与轨迹恢复开关也要保留。
-    settings = load_config(path)["counting"]
+    settings = _parse_config(text)["counting"]
     for key in ("time_confirmation_enabled", "state_recovery_enabled"):
         block += f"\n  {key}: {str(settings[key]).lower()}"
     for key in ("confirmation_max_gap_seconds", "state_recovery_max_gap_seconds"):

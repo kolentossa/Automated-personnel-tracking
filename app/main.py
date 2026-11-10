@@ -150,7 +150,6 @@ def create_program() -> SimpleNamespace:
 
     lock = threading.RLock()
     program = SimpleNamespace(
-        config=config,
         camera=camera_state,
         detector=detector_state,
         tracker=tracker_state,
@@ -282,7 +281,7 @@ def detect_profiled(program, frame):
 
 def get_latest_jpeg(program) -> bytes:
     with program.lock:
-        return bytes(program.latest_jpeg)
+        return program.latest_jpeg
 
 
 def stream_interval(program) -> float:
@@ -310,21 +309,14 @@ def update_counting_config(program, payload: dict) -> dict:
     )
     settings = {
         "anchor": result["anchor"],
-        "cooldown_frames": int(result.get("cooldown_frames") or 8),
-        "hysteresis_px": float(result.get("hysteresis_px") or 64),
-        "rearm_distance_px": float(result.get("rearm_distance_px") or 96),
-        "confirmation_frames": int(result.get("confirmation_frames") or 5),
-        "track_state_ttl_frames": int(result.get("track_state_ttl_frames") or 120),
-        "count_once_per_direction_per_track": bool(
-            result.get("count_once_per_direction_per_track", False)
-        ),
+        "cooldown_frames": result["cooldown_frames"],
+        "hysteresis_px": result["hysteresis_px"],
+        "rearm_distance_px": result["rearm_distance_px"],
+        "confirmation_frames": result["confirmation_frames"],
+        "track_state_ttl_frames": result["track_state_ttl_frames"],
+        "count_once_per_direction_per_track": result["count_once_per_direction_per_track"],
     }
     save_counting_config(result["line"], result["direction"], **settings)
-    program.config["counting"] = {
-        "line": result["line"],
-        "direction": {"mode": result["direction"]},
-        **settings,
-    }
     return result
 
 
@@ -350,27 +342,27 @@ def health(program) -> dict:
     stats = counting.counter_snapshot(program.counter)
     diagnostics = diagnostics_snapshot(program)
     privacy_required = bool(program.privacy_config.get("face_mosaic_enabled", True))
-    privacy_ok = not privacy_required or bool(diagnostics.get("face_detector_available"))
+    privacy_ok = not privacy_required or diagnostics["face_detector_available"]
     ok = (
-        bool(stats.get("running"))
-        and stats.get("camera_status") == "online"
-        and not stats.get("last_error")
+        stats["running"]
+        and stats["camera_status"] == "online"
+        and not stats["last_error"]
         and privacy_ok
     )
     data = {
         "status": "ok" if ok else "error",
-        "running": stats.get("running", False),
-        "camera_status": stats.get("camera_status", "offline"),
-        "source": stats.get("source", ""),
-        "fps": stats.get("fps", 0.0),
-        "latency_ms": stats.get("latency_ms", 0.0),
-        "error": stats.get("last_error", ""),
-        "available_cameras": stats.get("available_cameras", []),
-        "detector": stats.get("detector", ""),
-        "npu_enabled": stats.get("npu_enabled", False),
+        "running": stats["running"],
+        "camera_status": stats["camera_status"],
+        "source": stats["source"],
+        "fps": stats["fps"],
+        "latency_ms": stats["latency_ms"],
+        "error": stats["last_error"],
+        "available_cameras": stats["available_cameras"],
+        "detector": stats["detector"],
+        "npu_enabled": stats["npu_enabled"],
     }
     for key in TIMING_KEYS:
-        data[key] = stats.get(key, 0.0)
+        data[key] = stats[key]
     data.update(diagnostics)
     return data
 
@@ -413,7 +405,7 @@ def update_fps(program) -> None:
     elapsed = now - program.fps_started
     if elapsed < 1.0:
         return
-    program.fps = program.fps_count / max(0.001, elapsed)
+    program.fps = program.fps_count / elapsed
     program.fps_count = 0
     program.fps_started = now
 

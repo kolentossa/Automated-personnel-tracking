@@ -76,7 +76,6 @@ def create_counter(config: Dict[str, Any]) -> SimpleNamespace:
     """按配置建立计数数据；counter 只存字段，不绑定算法方法。"""
     counter = SimpleNamespace()
     # 计数规则：线的位置、进入方向、确认距离和最短观测时间。
-    counter.config = config
     counter.direction_mode = _direction_mode_from_config(config)
     counter.enter_direction = DIRECTION_TO_ENTER.get(counter.direction_mode, "negative_to_positive")
     counter.anchor = _normalize_anchor(config.get("anchor", "auto"))
@@ -390,12 +389,6 @@ def configure_counting(
         counter.anchor = anchor_mode
         counter.hysteresis_px = inner
         counter.rearm_distance_px = outer
-        counter.config["line"] = line_dict
-        counter.config["direction"] = {"mode": direction_mode}
-        counter.config["anchor"] = anchor_mode
-        counter.config["hysteresis_px"] = inner
-        counter.config["rearm_distance_px"] = outer
-        counter.config.pop("enter_direction", None)
         counter._track_states = _states_rebased_to_line(counter, parsed_line)
         return counting_config(counter)
 
@@ -687,9 +680,10 @@ def _coerce_line_dict(value: Dict[str, Any]) -> dict:
     line = {key: float(value[key]) for key in ("x1", "y1", "x2", "y2")}
     if not all(isfinite(number) for number in line.values()):
         raise ValueError("counting line coordinates must be finite")
+    line = {key: _clean_number(number) for key, number in line.items()}
     if line["x1"] == line["x2"] and line["y1"] == line["y2"]:
         raise ValueError("counting line start and end points must be different")
-    return {key: _clean_number(number) for key, number in line.items()}
+    return line
 
 
 def _direction_mode_from_config(config: Dict[str, Any]) -> str:

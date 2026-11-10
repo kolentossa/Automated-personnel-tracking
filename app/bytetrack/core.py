@@ -2,7 +2,6 @@ from typing import List, Tuple
 
 import numpy as np
 
-from .box_iou import box_iou_batch
 from . import matching
 from .kalman_filter import KalmanFilter
 from .single_object_track import STrack, TrackState
@@ -116,7 +115,6 @@ class ByteTrack:
                     STrack.tlbr_to_tlwh(tlbr),
                     score_keep,
                     self.minimum_consecutive_frames,
-                    self.shared_kalman,
                     self.internal_id_counter,
                     self.external_id_counter,
                 )
@@ -165,7 +163,6 @@ class ByteTrack:
                     STrack.tlbr_to_tlwh(tlbr),
                     score_second,
                     self.minimum_consecutive_frames,
-                    self.shared_kalman,
                     self.internal_id_counter,
                     self.external_id_counter,
                 )

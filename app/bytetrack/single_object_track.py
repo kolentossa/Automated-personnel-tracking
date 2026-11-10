@@ -23,7 +23,6 @@ class STrack:
         tlwh: npt.NDArray[np.float32],
         score: npt.NDArray[np.float32],
         minimum_consecutive_frames: int,
-        shared_kalman: KalmanFilter,
         internal_id_counter: IdCounter,
         external_id_counter: IdCounter,
     ):
@@ -35,9 +34,7 @@ class STrack:
         self._tlwh = np.asarray(tlwh, dtype=np.float32)
         self.observed_tlbr = self.tlwh_to_tlbr(self._tlwh)
         self.kalman_filter = None
-        self.shared_kalman = shared_kalman
         self.mean, self.covariance = None, None
-        self.is_activated = False
 
         self.score = score
         self.tracklet_len = 0

@@ -34,8 +34,3 @@ class TrackedPerson:
 def bbox_centroid(bbox: BBox) -> tuple[float, float]:
     x1, y1, x2, y2 = bbox
     return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
-
-
-def bbox_area(bbox: BBox) -> float:
-    x1, y1, x2, y2 = bbox
-    return max(0.0, x2 - x1) * max(0.0, y2 - y1)

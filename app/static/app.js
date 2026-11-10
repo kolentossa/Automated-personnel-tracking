@@ -170,7 +170,7 @@ async function loadConfig() {
   }
 }
 
-function applyConfig(config) {
+function applyConfig(config, message = "") {
   countingSettings.line = normalizeLine(config.line);
   countingSettings.direction = config.direction || "left_to_right";
   countingSettings.frameSize = normalizeFrameSize(config.frame_size);
@@ -181,7 +181,7 @@ function applyConfig(config) {
   deadZoneInput.value = countingSettings.deadZone;
   confirmationInput.value = countingSettings.confirmationDistance;
   countingSettings.draftStart = null;
-  renderSettings();
+  renderSettings(message);
 }
 
 async function saveConfig(message = "settings_saved") {
@@ -196,8 +196,7 @@ async function saveConfig(message = "settings_saved") {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    applyConfig(updated);
-    renderSettings(message);
+    applyConfig(updated, message);
   } catch (error) {
     setMessage("save_failed", error.message);
   } finally {

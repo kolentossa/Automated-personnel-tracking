@@ -22,7 +22,6 @@ class CameraFrame:
 def create_camera(config: dict) -> SimpleNamespace:
     """保存设置和连接状态；第一次读取时才打开设备。"""
     return SimpleNamespace(
-        config=config,
         camera_device=str(config.get("camera_device") or "/dev/video11"),
         auto_detect=bool(config.get("auto_detect", True)),
         width=int(config.get("width") or 1280),
@@ -32,7 +31,6 @@ def create_camera(config: dict) -> SimpleNamespace:
         status="offline",
         error="",
         selected_source="",
-        selected_backend="",
         available_devices=[],
         capture=None,
         last_open_attempt=0.0,
@@ -68,17 +66,15 @@ def open_camera(camera: SimpleNamespace) -> bool:
         capture = open_v4l2_capture(device, camera.width, camera.height, camera.target_fps)
         probe = probe_capture(capture, device, "v4l2")
         camera.available_devices.append(probe)
-        if probe.get("readable") and capture is not None:
+        if probe.get("readable"):
             camera.capture = capture
             camera.selected_source = device
-            camera.selected_backend = "v4l2"
             camera.status = "online"
             camera.error = ""
             return True
         if capture is not None:
             capture.release()
     camera.selected_source = candidates[0] if candidates else camera.camera_device
-    camera.selected_backend = "v4l2"
     camera.status = "error"
     probed = ", ".join(candidates) if candidates else "no /dev/video* devices"
     camera.error = f"No readable camera found. backend=v4l2; configured={camera.camera_device}; probed={probed}."
