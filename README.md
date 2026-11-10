@@ -12,11 +12,13 @@ YOLO finds people, ByteTrack assigns temporary IDs, and the counter records a pa
 
 ## Models and code sources
 
-- **Person detection:** pretrained YOLOv5m CrowdHuman weights from [yakhyo/yolov5-crowdhuman-onnx](https://github.com/yakhyo/yolov5-crowdhuman-onnx), converted to INT8 RKNN for the NPU.
-- **Face detection:** [RetinaFace Mobile320 ONNX](https://ftrg.zbox.filez.com/v2/delivery/data/95f00b0fc900458ba134f8b180b3f7a1/examples/RetinaFace/RetinaFace_mobile320.onnx), distributed by Rockchip and run on the CPU.
-- **Tracking:** ByteTrack from [Supervision 0.25.0](https://github.com/roboflow/supervision/tree/eaeb51a8dbe4bef5ef2c1e7e733907226d863e2f/supervision/tracker/byte_tracker), included in `app/bytetrack/`. Third-party notices are in `LICENSE`.
+We chose YOLOv5m trained on [CrowdHuman](https://www.crowdhuman.org/) after the previous YOLOv8n detector merged two people into one box during side-by-side crossings. CrowdHuman includes crowded scenes with overlapping people. The replacement produced the expected entry and exit counts in our three comparison videos.
 
-Our work includes model conversion and deployment, tracking with actual frame times, crossing confirmation and state recovery, face masking, processing threads, and the web interface.
+- **Person detection:** pretrained YOLOv5m CrowdHuman ONNX weights published by [yakhyo](https://github.com/yakhyo/yolov5-crowdhuman-onnx). The publisher credits [SibiAkkash](https://github.com/SibiAkkash/yolov5-crowdhuman) for the weights.
+- **Face detection:** pretrained RetinaFace Mobile320 ONNX distributed through [Rockchip's model zoo](https://github.com/airockchip/rknn_model_zoo/blob/main/examples/RetinaFace/model/download_model.sh), used to locate faces for masking.
+- **Tracking:** the ByteTrack implementation from [Supervision 0.25.0](https://github.com/roboflow/supervision/tree/eaeb51a8dbe4bef5ef2c1e7e733907226d863e2f/supervision/tracker/byte_tracker), included in `app/bytetrack/`. Third-party notices are in `LICENSE`.
+
+Our work covers 448×448 input preparation, INT8 quantization, RKNN conversion, NPU deployment, output decoding, and video testing. We adapted ByteTrack to use actual frame times and added crossing confirmation, state recovery, face masking, processing threads, and the web interface.
 
 ## Installation and running
 
